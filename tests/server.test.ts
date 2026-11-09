@@ -56,8 +56,8 @@ async function setup(over: { systemStats?: () => Promise<unknown>; plan?: () => 
   return { dir, app, runner, release, calls, planJson };
 }
 
-const post = (app: ReturnType<typeof buildApp>, theme = "", collections?: unknown) =>
-  app.inject({ method: "POST", url: "/api/autopilot/start", headers: H, payload: { theme, collections } });
+const post = (app: ReturnType<typeof buildApp>, theme = "", collections?: unknown, variations?: unknown) =>
+  app.inject({ method: "POST", url: "/api/autopilot/start", headers: H, payload: { theme, collections, variations } });
 
 test("second start while running is rejected (409) and does not create a second batch", async () => {
   const { app, runner, release, calls } = await setup();
@@ -195,4 +195,54 @@ test("validateBatch and generateBatch: exact count, distinct titles, single Code
   assert.equal(r.plans.length, 2);
   assert.equal((await readFile(counter, "utf8")).length, 1); // exactly one Codex process
   assert.match(planPrompt(undefined, [], 2), /exactly 2 Prompt Plans/);
+});
+
+test("variations: validated 1/2/4, 3x4x2 = 24 jobs with ONE Codex call, progress in images", async () => {
+  const { app, runner, release, calls } = await setup();
+  for (const bad of [0, 3, 5, "2"]) assert.equal((await post(app, "", 1, bad)).statusCode, 400);
+  assert.equal(calls.plan, 0);
+  assert.equal((await post(app, "", 3, 2)).statusCode, 202);
+  assert.equal(runner.state.total, 24);
+  release();
+  while (runner.active) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(calls.plan, 1);
+  assert.equal(calls.submit, 24);
+  assert.equal(runner.state.done, 24);
+  const list = (await app.inject({ method: "GET", url: "/api/collections", headers: H })).json();
+  assert.equal(list.length, 3);
+  assert.ok(list.every((c: { variations: number; frames: unknown[] }) => c.variations === 2 && c.frames.length === 8));
+});
+
+test("best-image selection is validated, persisted on disk and survives a new app instance", async () => {
+  const { app, runner, release, dir } = await setup();
+  await post(app, "", 1, 2);
+  release();
+  while (runner.active) await new Promise((r) => setTimeout(r, 10));
+  const id = (await app.inject({ method: "GET", url: "/api/collections", headers: H })).json()[0].id;
+  const put = (payload: Record<string, unknown>) => app.inject({ method: "PUT", url: `/api/collections/${id}/selection`, headers: H, payload });
+  assert.equal((await put({ frame: 2, variant: 2 })).statusCode, 200);
+  assert.equal((await put({ frame: 2, variant: 9 })).statusCode, 400); // no such image
+  assert.equal((await put({ frame: 7, variant: 1 })).statusCode, 400);
+  assert.equal((await app.inject({ method: "PUT", url: "/api/collections/nope/selection", headers: H, payload: { frame: 1, variant: 1 } })).statusCode, 404);
+  assert.equal((await put({ frame: 1, variant: 1 })).statusCode, 200);
+  assert.equal((await put({ frame: 2, variant: 1 })).statusCode, 200); // exactly one per frame: replaces v2
+  const saved = JSON.parse(await readFile(join(dir, id, "selections.json"), "utf8"));
+  assert.deepEqual(saved, { "1": 1, "2": 1 });
+  const c = (await app.inject({ method: "GET", url: `/api/collections/${id}`, headers: H })).json();
+  assert.deepEqual(c.selections, { "1": 1, "2": 1 });
+  assert.equal((await put({ frame: 1, variant: null })).statusCode, 200);
+  assert.deepEqual(JSON.parse(await readFile(join(dir, id, "selections.json"), "utf8")), { "2": 1 });
+});
+
+test("historic collection (no variant field, scene-01.png) opens as variant 1 and can be selected", async () => {
+  const { app, dir } = await setup();
+  await mkdir(join(dir, "old"));
+  await writeFile(join(dir, "old", "scene-01.png"), Buffer.from("png"));
+  await writeFile(join(dir, "old", "collection.json"), JSON.stringify({ title: "Old", createdAt: "2026-01-01T00:00:00Z", status: "done", dir, frames: [{ frame: 1, model: "duskrose", seed: 1, status: "done", png: "scene-01.png" }] }));
+  const c = (await app.inject({ method: "GET", url: "/api/collections/old", headers: H })).json();
+  assert.equal(c.variations, 1);
+  assert.equal(c.frames[0].variant, 1);
+  assert.deepEqual(c.selections, {});
+  assert.equal((await app.inject({ method: "GET", url: "/api/collections/old/images/scene-01.png", headers: H })).statusCode, 200);
+  assert.equal((await app.inject({ method: "PUT", url: "/api/collections/old/selection", headers: H, payload: { frame: 1, variant: 1 } })).statusCode, 200);
 });

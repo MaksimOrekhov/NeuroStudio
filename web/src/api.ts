@@ -1,5 +1,6 @@
 export interface Frame {
   frame: number;
+  variant: number;
   model: string;
   summary?: string;
   status: string;
@@ -17,6 +18,8 @@ export interface Collection {
   status: "running" | "done" | "failed" | "interrupted";
   doneFrames: number;
   frames: Frame[];
+  variations: number;
+  selections: Record<string, number>;
 }
 
 export interface RunState {
@@ -28,6 +31,7 @@ export interface RunState {
   total: number;
   collection: number;
   collections: number;
+  variations: number;
   finished: string[];
   currentFrame?: number;
   error?: string;
@@ -47,11 +51,17 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const getStatus = () => json<ApiStatus>("/api/status");
 export const getCollections = (limit = 8) => json<Collection[]>(`/api/collections?limit=${limit}`);
-export const startRun = (theme: string, collections: number) =>
+export const startRun = (theme: string, collections: number, variations: number) =>
   json<RunState>("/api/autopilot/start", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ theme, collections }),
+    body: JSON.stringify({ theme, collections, variations }),
   });
 export const imageUrl = (id: string, file: string, download = false) =>
   `/api/collections/${encodeURIComponent(id)}/images/${file}${download ? "?download=1" : ""}`;
+export const selectBest = (id: string, frame: number, variant: number | null) =>
+  json<Record<string, number>>(`/api/collections/${encodeURIComponent(id)}/selection`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ frame, variant }),
+  });

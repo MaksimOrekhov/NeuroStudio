@@ -91,3 +91,41 @@ test("ComfyUI disappears after a job was accepted: indeterminate status, prompt_
   assert.equal(m.frames[0].promptId, "id-1");
   assert.equal(m.frames[1].status, "pending");
 });
+
+test("variants: same prompts and settings per frame, only seed (and file name) differ; seeds all unique; 4 x v jobs", async () => {
+  const { plan, base } = await load();
+  for (const v of [1, 2, 4]) assert.equal(buildJobs(plan, base, "demo", v).length, 4 * v);
+  const jobs = buildJobs(plan, base, "demo", 4);
+  assert.equal(new Set(jobs.map((j) => j.seed)).size, 16);
+  assert.deepEqual(buildJobs(plan, base, "demo", 1).map((j) => j.file).sort(), ["scene-01", "scene-02", "scene-03", "scene-04"]); // legacy names
+  assert.ok(jobs.every((j) => /^scene-0[1-4]-v0[1-4]$/.test(j.file)));
+  const norm = (g: Record<string, { inputs: Record<string, unknown> }>) => {
+    const c = structuredClone(g);
+    c["90:76"].inputs.seed = 0;
+    c["46"].inputs.filename_prefix = "";
+    return JSON.stringify(c);
+  };
+  for (const frame of [1, 2, 3, 4]) {
+    const same = jobs.filter((j) => j.frame === frame);
+    assert.equal(same.length, 4);
+    assert.equal(new Set(same.map((j) => norm(j.graph))).size, 1);
+  }
+});
+
+test("a failing variant stops the run: ready images kept, prompt_id kept, nothing resubmitted", async () => {
+  const { plan, base } = await load();
+  const dir = await mkdtemp(join(tmpdir(), "ns-"));
+  let waits = 0;
+  const { client, calls } = fakeClient({
+    waitForImages: async () => {
+      if (++waits === 3) throw new Error("Generation failed: boom");
+      return { images: [{ filename: "a.png", subfolder: "", type: "output" }], history: {} };
+    },
+  });
+  await assert.rejects(runCollection({ plan, jobs: buildJobs(plan, base, "demo", 2), dir, client }), /boom/);
+  assert.equal(calls.submit, 3);
+  const m = JSON.parse(await readFile(join(dir, "collection.json"), "utf8"));
+  assert.deepEqual(m.frames.map((f: { status: string }) => f.status).slice(0, 4), ["done", "done", "failed", "pending"]);
+  assert.equal(m.frames[2].promptId, "id-3");
+  assert.equal((await readFile(join(dir, "scene-01-v01.png"))).length, 3);
+});

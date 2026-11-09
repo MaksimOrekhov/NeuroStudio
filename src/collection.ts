@@ -8,32 +8,43 @@ const SEED_MAX = 2 ** 48 - 1;
 
 export interface Job {
   frame: number;
+  /** 1-based seed variant of the frame; same prompt and settings, only the seed differs. */
+  variant: number;
+  /** File base name: scene-01 (single variation, legacy) or scene-01-v02. */
+  file: string;
   model: keyof typeof MODELS;
   seed: number;
   summary: string;
   graph: Graph;
 }
 
+const pad = (n: number) => String(n).padStart(2, "0");
+
 /**
- * Builds the four jobs. Execution order groups frames by model (fewer checkpoint reloads);
- * frame numbers stay those of the plan.
+ * Builds 4 x variations jobs (variations = 1 keeps the legacy scene-NN names). Every variant of a frame uses
+ * the same prompts and settings; only the seed differs, and all seeds are unique. Execution order groups
+ * frames by model (fewer checkpoint reloads); frame numbers stay those of the plan.
  */
-export function buildJobs(plan: PromptPlan, base: Graph, slug: string, seeds?: number[]): Job[] {
+export function buildJobs(plan: PromptPlan, base: Graph, slug: string, variations = 1): Job[] {
   const used = new Set<number>();
-  const jobs = plan.frames.map((f, i) => {
-    let seed = seeds?.[i] ?? randomInt(0, SEED_MAX);
-    while (used.has(seed)) seed = randomInt(0, SEED_MAX);
-    used.add(seed);
-    const graph = applyParams(base, {
-      positive: f.positive,
-      negative: f.negative,
-      seed,
-      unet: MODELS[f.model],
-      filenamePrefix: `NeuroStudio/${slug}/scene-${String(f.frame).padStart(2, "0")}`,
-    });
-    return { frame: f.frame, model: f.model, seed, summary: f.summary, graph };
-  });
-  return jobs.sort((a, b) => (a.model === b.model ? a.frame - b.frame : a.model === "crimson-oath" ? -1 : 1));
+  const jobs: Job[] = [];
+  for (const f of plan.frames) {
+    for (let variant = 1; variant <= variations; variant++) {
+      let seed = randomInt(0, SEED_MAX);
+      while (used.has(seed)) seed = randomInt(0, SEED_MAX);
+      used.add(seed);
+      const file = variations === 1 ? `scene-${pad(f.frame)}` : `scene-${pad(f.frame)}-v${pad(variant)}`;
+      const graph = applyParams(base, {
+        positive: f.positive,
+        negative: f.negative,
+        seed,
+        unet: MODELS[f.model],
+        filenamePrefix: `NeuroStudio/${slug}/${file}`,
+      });
+      jobs.push({ frame: f.frame, variant, file, model: f.model, seed, summary: f.summary, graph });
+    }
+  }
+  return jobs.sort((a, b) => (a.model === b.model ? a.frame - b.frame || a.variant - b.variant : a.model === "crimson-oath" ? -1 : 1));
 }
 
 export function slugify(title: string): string {
@@ -43,6 +54,8 @@ export function slugify(title: string): string {
 
 export interface FrameRecord {
   frame: number;
+  /** Absent in collections made before NS-006: means variant 1. */
+  variant?: number;
   model: string;
   seed: number;
   status: "pending" | "submitted" | "done" | "failed" | "timeout";
@@ -59,12 +72,12 @@ export interface Manifest {
   dir: string;
   codex?: { seconds: number; tokens: unknown };
   comfySeconds?: number;
+  /** Seed variants per frame (absent in older collections: 1). */
+  variations?: number;
   frames: FrameRecord[];
 }
 
 type Client = Pick<ComfyClient, "systemStats" | "checkDependencies" | "submit" | "waitForImages" | "download">;
-
-const scene = (n: number) => `scene-${String(n).padStart(2, "0")}`;
 
 /**
  * Runs the jobs one at a time. Never resubmits: a failed or timed-out job stops the run,
@@ -93,7 +106,8 @@ export async function runCollection(opts: {
     status: "running",
     dir,
     codex: opts.codex,
-    frames: jobs.map((j) => ({ frame: j.frame, model: j.model, seed: j.seed, status: "pending" })),
+    variations: Math.max(1, ...jobs.map((j) => j.variant)),
+    frames: jobs.map((j) => ({ frame: j.frame, variant: j.variant, model: j.model, seed: j.seed, status: "pending" })),
   };
   const save = async () => {
     await writeFile(join(dir, "collection.json"), JSON.stringify(m, null, 2));
@@ -112,7 +126,7 @@ export async function runCollection(opts: {
 
     for (const [i, job] of jobs.entries()) {
       const rec = m.frames[i];
-      const name = scene(job.frame);
+      const name = job.file;
       const tj = Date.now();
       log(`[${i + 1}/${jobs.length}] ${name} ${job.model}: submitting`);
       rec.promptId = await client.submit(job.graph, randomUUID()); // failure here: nothing was accepted
@@ -134,7 +148,7 @@ export async function runCollection(opts: {
       await writeFile(join(dir, rec.png), png);
       await writeFile(
         join(dir, `${name}.json`),
-        JSON.stringify({ frame: job.frame, model: job.model, summary: job.summary, seed: job.seed, promptId: rec.promptId, seconds: rec.seconds, image: images[0], graph: job.graph, history }, null, 2),
+        JSON.stringify({ frame: job.frame, model: job.model, summary: job.summary, variant: job.variant, seed: job.seed, promptId: rec.promptId, seconds: rec.seconds, image: images[0], graph: job.graph, history }, null, 2),
       );
       await save();
       log(`    done in ${rec.seconds.toFixed(1)}s -> ${rec.png}`);

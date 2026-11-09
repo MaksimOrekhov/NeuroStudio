@@ -7,7 +7,7 @@ import { listCollections } from "./collections.ts";
 
 export type RunStatus = "idle" | "planning" | "generating" | "completed" | "failed";
 
-const FRAMES = 4;
+const FRAMES = 4; // scenes per collection
 
 export interface RunState {
   status: RunStatus;
@@ -21,6 +21,8 @@ export interface RunState {
   /** 1-based index of the current collection and number of collections in the batch. */
   collection: number;
   collections: number;
+  /** Seed variants per scene. */
+  variations: number;
   currentFrame?: number;
   /** Ids of collections already saved by this batch. */
   finished: string[];
@@ -49,7 +51,7 @@ export interface RunnerDeps {
   log?: (s: string) => void;
 }
 
-const idle = (): RunState => ({ status: "idle", done: 0, total: FRAMES, collection: 0, collections: 1, finished: [] });
+const idle = (): RunState => ({ status: "idle", done: 0, total: FRAMES, collection: 0, collections: 1, variations: 1, finished: [] });
 
 /** Runs at most one batch at a time, in the background. Nothing is ever resumed or resubmitted automatically. */
 export class AutopilotRunner {
@@ -62,7 +64,7 @@ export class AutopilotRunner {
     return this.busy;
   }
 
-  async start(theme: string | undefined, count = 1): Promise<RunState> {
+  async start(theme: string | undefined, count = 1, variations = 1): Promise<RunState> {
     if (this.busy) throw new RunError("already_running", "An Autopilot run is already in progress", 409);
     this.busy = true; // synchronous lock: a concurrent second call cannot pass this line
     try {
@@ -71,8 +73,8 @@ export class AutopilotRunner {
       this.busy = false;
       throw new RunError("comfy_unavailable", `ComfyUI is not reachable: ${(e as Error).message}. Start ComfyUI and try again.`, 503);
     }
-    this.state = { ...idle(), status: "planning", theme, total: FRAMES * count, collections: count, startedAt: new Date().toISOString() };
-    void this.execute(theme, count)
+    this.state = { ...idle(), status: "planning", theme, total: FRAMES * variations * count, collections: count, variations, startedAt: new Date().toISOString() };
+    void this.execute(theme, count, variations)
       .catch((e) => {
         this.state = { ...this.state, status: "failed", error: (e as Error).message, finishedAt: new Date().toISOString() };
       })
@@ -82,7 +84,7 @@ export class AutopilotRunner {
     return this.state;
   }
 
-  private async execute(theme: string | undefined, count: number) {
+  private async execute(theme: string | undefined, count: number, variations: number) {
     const { collectionsDir, batchesDir, log } = this.deps;
     const avoid = (await listCollections(collectionsDir, 20)).map((c) => c.title);
     const r = await this.deps.plan({ theme, avoid, count }); // all plans are validated before any GPU work
@@ -92,6 +94,7 @@ export class AutopilotRunner {
       createdAt: new Date().toISOString(),
       theme: theme ?? null,
       count,
+      variations,
       status: "running" as "running" | "done" | "failed",
       codex: { seconds: r.ms / 1000, tokens: r.tokens },
       collectionIds: [] as string[],
@@ -105,13 +108,13 @@ export class AutopilotRunner {
       for (const [i, plan] of r.plans.entries()) {
         const slug = slugify(plan.concept.title);
         const id = `${new Date().toISOString().slice(0, 10)}-${slug}-${Date.now().toString(36)}`;
-        const base = i * FRAMES;
+        const base = i * FRAMES * variations;
         this.state = { ...this.state, status: "generating", collectionId: id, title: plan.concept.title, collection: i + 1, currentFrame: undefined };
         batch.collectionIds.push(id);
         await saveBatch();
         await runCollection({
           plan,
-          jobs: buildJobs(plan, this.deps.baseGraph, slug),
+          jobs: buildJobs(plan, this.deps.baseGraph, slug, variations),
           dir: join(collectionsDir, id),
           client: this.deps.client,
           codex: { seconds: r.ms / 1000, tokens: r.tokens },
@@ -124,7 +127,7 @@ export class AutopilotRunner {
         this.state = { ...this.state, finished: [...this.state.finished, id] };
       }
       batch.status = "done";
-      this.state = { ...this.state, status: "completed", currentFrame: undefined, done: FRAMES * count, finishedAt: new Date().toISOString() };
+      this.state = { ...this.state, status: "completed", currentFrame: undefined, done: FRAMES * variations * count, finishedAt: new Date().toISOString() };
     } catch (e) {
       batch.status = "failed";
       batch.error = (e as Error).message;

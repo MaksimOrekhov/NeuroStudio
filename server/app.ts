@@ -4,8 +4,8 @@ import { basename, resolve } from "node:path";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { ComfyClient } from "../src/comfy.ts";
-import { listCollections, readCollection, safeImagePath } from "./collections.ts";
-import { parseCount } from "../src/promptPlan.ts";
+import { SelectionError, listCollections, readCollection, safeImagePath, setSelection } from "./collections.ts";
+import { parseCount, parseVariations } from "../src/promptPlan.ts";
 import { RunError, type AutopilotRunner } from "./runner.ts";
 
 export interface AppDeps {
@@ -44,16 +44,18 @@ export function buildApp(d: AppDeps) {
   });
 
   app.post("/api/autopilot/start", async (req, reply) => {
-    const body = (req.body ?? {}) as { theme?: unknown; collections?: unknown };
+    const body = (req.body ?? {}) as { theme?: unknown; collections?: unknown; variations?: unknown };
     let count: number;
+    let variations: number;
     try {
       count = parseCount(body.collections);
+      variations = parseVariations(body.variations);
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
     const theme = typeof body.theme === "string" ? body.theme.trim().slice(0, 200) : "";
     try {
-      return reply.code(202).send(await d.runner.start(theme || undefined, count));
+      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations));
     } catch (e) {
       if (e instanceof RunError) return reply.code(e.httpStatus).send({ error: e.message, code: e.code });
       throw e;
@@ -70,6 +72,16 @@ export function buildApp(d: AppDeps) {
   app.get("/api/collections/:id", async (req, reply) => {
     const c = await readCollection(d.collectionsDir, (req.params as { id: string }).id, activeId());
     return c ?? reply.code(404).send({ error: "collection not found" });
+  });
+
+  app.put("/api/collections/:id/selection", async (req, reply) => {
+    const { frame, variant } = (req.body ?? {}) as { frame?: unknown; variant?: unknown };
+    try {
+      return await setSelection(d.collectionsDir, (req.params as { id: string }).id, frame, variant);
+    } catch (e) {
+      if (e instanceof SelectionError) return reply.code(e.message === "collection not found" ? 404 : 400).send({ error: e.message });
+      throw e;
+    }
   });
 
   app.get("/api/collections/:id/images/:file", async (req, reply) => {

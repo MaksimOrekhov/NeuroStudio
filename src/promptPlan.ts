@@ -76,3 +76,12 @@ export function validateBatch(x: unknown, count: number): PromptPlan[] {
   if (titles.size !== plans.length) throw new PlanError("Collections in a batch must have distinct concepts (duplicate title)");
   return plans;
 }
+
+export const VARIATION_CHOICES = [1, 2, 4];
+
+/** Seed variations per frame: 1, 2 or 4; undefined means 1. */
+export function parseVariations(x: unknown): number {
+  if (x === undefined || x === null) return 1;
+  if (typeof x !== "number" || !VARIATION_CHOICES.includes(x)) throw new PlanError("variations must be 1, 2 or 4");
+  return x;
+}

@@ -2,10 +2,11 @@
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { imageUrl, type Collection } from "./api";
 
-const props = defineProps<{ collection: Collection; frame: number }>();
+const props = defineProps<{ collection: Collection; frame: number; variant: number }>();
 const emit = defineEmits<{ close: [] }>();
 
-const f = computed(() => props.collection.frames.find((x) => x.frame === props.frame));
+const f = computed(() => props.collection.frames.find((x) => x.frame === props.frame && x.variant === props.variant));
+const isBest = computed(() => props.collection.selections[String(props.frame)] === props.variant);
 const onKey = (e: KeyboardEvent) => e.key === "Escape" && emit("close");
 onMounted(() => window.addEventListener("keydown", onKey));
 onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
@@ -17,7 +18,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       <img :src="imageUrl(collection.id, f.image)" :alt="f.summary" />
       <div class="bar">
         <div>
-          <b>{{ collection.title }} · scene {{ f.frame }}</b>
+          <b>{{ collection.title }} · scene {{ f.frame }}<template v-if="collection.variations > 1"> · v{{ f.variant }}</template><template v-if="isBest"> · ★ Best</template></b>
           <p>{{ f.summary }}</p>
         </div>
         <a :href="imageUrl(collection.id, f.image, true)">Download PNG</a>
