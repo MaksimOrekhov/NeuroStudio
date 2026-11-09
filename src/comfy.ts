@@ -13,6 +13,7 @@ export interface GenParams {
   aspectRatio?: string;
   megapixels?: number;
   filenamePrefix?: string;
+  unet?: string;
 }
 
 export interface ImageRef {
@@ -42,7 +43,14 @@ export const FIELDS: Record<keyof GenParams, Field> = {
   aspectRatio: { node: "91", cls: "ResolutionSelector", input: "aspect_ratio" },
   megapixels: { node: "91", cls: "ResolutionSelector", input: "megapixels" },
   filenamePrefix: { node: "46", cls: "SaveImage", input: "filename_prefix" },
+  unet: { node: "90:78", cls: "UNETLoader", input: "unet_name" },
 };
+
+/** Plan model id -> checkpoint file. Both use the same graph (workflows/anima-crimson-oath.api.json); only the UNET differs (verified in NS-001). */
+export const MODELS = {
+  "crimson-oath": "vetehineCrimsonOathILL_v02ANM.safetensors",
+  duskrose: "Duskrose v4 ANM.safetensors",
+} as const;
 
 export async function loadWorkflow(path: string): Promise<Graph> {
   let raw: string;
