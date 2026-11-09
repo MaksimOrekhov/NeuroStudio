@@ -7,6 +7,7 @@ import Lightbox from "./Lightbox.vue";
 const status = ref<ApiStatus | null>(null);
 const collections = ref<Collection[]>([]);
 const theme = ref("");
+const count = ref(3);
 const starting = ref(false);
 const error = ref("");
 const serverDown = ref(false);
@@ -22,11 +23,13 @@ const percent = computed(() => (run.value ? (run.value.done / run.value.total) *
 const phase = computed(() => {
   const r = run.value;
   if (!r) return "";
-  if (r.status === "planning") return "Creating concept and prompts with Codex…";
+  const multi = r.collections > 1;
+  if (r.status === "planning") return multi ? `Creating ${r.collections} concepts and prompts with Codex…` : "Creating concept and prompts with Codex…";
   if (r.status === "generating") {
-    return r.currentFrame ? `Generating image — scene ${r.currentFrame}` : "Generating images";
+    const head = multi ? `Generating collection ${r.collection} / ${r.collections}` : "Generating images";
+    return r.currentFrame ? `${head} — scene ${r.currentFrame}` : head;
   }
-  if (r.status === "completed") return "Collection completed";
+  if (r.status === "completed") return multi ? `${r.collections} collections completed` : "Collection completed";
   return "";
 });
 
@@ -53,7 +56,7 @@ async function start() {
   error.value = "";
   starting.value = true;
   try {
-    const s = await startRun(theme.value);
+    const s = await startRun(theme.value, count.value);
     if (status.value) status.value.run = s;
   } catch (e) {
     error.value = (e as Error).message;
@@ -92,6 +95,11 @@ onBeforeUnmount(() => clearTimeout(timer));
     <section class="panel hero">
       <label for="theme">Theme <em>optional</em></label>
       <input id="theme" v-model="theme" :disabled="active" maxlength="200" placeholder="Leave empty — AI invents the concept" @keyup.enter="canStart && start()" />
+      <div class="seg" role="group" aria-label="Number of collections">
+        <button v-for="n in [1, 2, 3]" :key="n" :class="{ on: count === n }" :disabled="active" @click="count = n">
+          {{ n }} {{ n === 1 ? "collection" : "collections" }} <small>· {{ n * 4 }} images</small>
+        </button>
+      </div>
       <button class="go" :disabled="!canStart" @click="start">
         {{ active ? "Generating…" : "Generate Collections" }}
       </button>
@@ -106,7 +114,10 @@ onBeforeUnmount(() => clearTimeout(timer));
         <p v-if="run?.title" class="muted">{{ run.title }}</p>
       </div>
 
-      <p v-if="run?.status === 'failed'" class="note bad">Run failed: {{ run.error }}</p>
+      <p v-if="run?.status === 'failed'" class="note bad">
+        Run stopped<template v-if="run.collections > 1"> at collection {{ run.collection }} / {{ run.collections }}</template>: {{ run.error }}
+        <template v-if="run.finished.length"> Completed collections are saved below.</template>
+      </p>
       <p v-if="error" class="note bad">{{ error }}</p>
     </section>
 
@@ -134,6 +145,11 @@ label { font-size: 13px; color: var(--muted); }
 label em { font-style: normal; opacity: 0.6; margin-left: 6px; }
 input { width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 12px 14px; outline: none; }
 input:focus { border-color: var(--accent); }
+.seg { display: flex; gap: 8px; flex-wrap: wrap; }
+.seg button { flex: 1; min-width: 150px; padding: 10px 12px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+.seg button small { opacity: 0.7; }
+.seg button.on { color: var(--text); border-color: var(--accent); background: #1d1a3a; }
+.seg button:disabled { cursor: not-allowed; opacity: 0.6; }
 .go { margin-top: 4px; padding: 18px; font-size: 18px; font-weight: 600; color: #fff; border: 0; border-radius: 12px; cursor: pointer; background: linear-gradient(135deg, var(--accent), #5b8cff); }
 .go:hover:not(:disabled) { filter: brightness(1.1); }
 .go:disabled { opacity: 0.45; cursor: not-allowed; }

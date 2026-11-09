@@ -1,6 +1,6 @@
 import { join, resolve } from "node:path";
 import { ComfyClient, loadWorkflow } from "../src/comfy.ts";
-import { generatePlan } from "../src/codex.ts";
+import { generateBatch } from "../src/codex.ts";
 import { buildApp } from "./app.ts";
 import { AutopilotRunner } from "./runner.ts";
 
@@ -11,9 +11,10 @@ const collectionsDir = join(root, "output/collections");
 
 const runner = new AutopilotRunner({
   client: new ComfyClient(comfyUrl),
-  plan: generatePlan,
+  plan: generateBatch,
   baseGraph: await loadWorkflow(join(root, "workflows/anima-crimson-oath.api.json")),
   collectionsDir,
+  batchesDir: join(root, "output/batches"),
   log: (s) => console.log(s),
 });
 

@@ -26,6 +26,9 @@ export interface RunState {
   title?: string;
   done: number;
   total: number;
+  collection: number;
+  collections: number;
+  finished: string[];
   currentFrame?: number;
   error?: string;
 }
@@ -44,11 +47,11 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const getStatus = () => json<ApiStatus>("/api/status");
 export const getCollections = (limit = 8) => json<Collection[]>(`/api/collections?limit=${limit}`);
-export const startRun = (theme: string) =>
+export const startRun = (theme: string, collections: number) =>
   json<RunState>("/api/autopilot/start", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ theme }),
+    body: JSON.stringify({ theme, collections }),
   });
 export const imageUrl = (id: string, file: string, download = false) =>
   `/api/collections/${encodeURIComponent(id)}/images/${file}${download ? "?download=1" : ""}`;

@@ -38,7 +38,7 @@ const unknown = computed(() => props.collection.frames.filter((f) => f.status ==
         <div v-else class="img empty" :class="f.status">
           <span v-if="f.status === 'submitted'">{{ collection.status === 'running' ? 'Generating…' : 'Unknown state' }}</span>
           <span v-else-if="f.status === 'pending'">{{ collection.status === 'running' ? 'Queued' : 'Not generated' }}</span>
-          <span v-else>{{ f.status === 'timeout' ? 'Timed out' : 'Failed' }}</span>
+          <span v-else>{{ f.status === 'timeout' ? 'Unknown state' : 'Failed' }}</span>
         </div>
         <figcaption>
           <b>{{ f.frame }}</b> {{ MODEL_LABEL[f.model] ?? f.model }}
@@ -47,8 +47,8 @@ const unknown = computed(() => props.collection.frames.filter((f) => f.status ==
       </figure>
     </div>
 
-    <p v-if="collection.status === 'interrupted' && unknown.length" class="warnline">
-      Run was interrupted. Not re-submitted automatically. Check ComfyUI history for
+    <p v-if="collection.status !== 'running' && unknown.length" class="warnline">
+      Frame state is unknown (run interrupted or ComfyUI went away). Not re-submitted automatically. Check ComfyUI history for
       prompt_id: {{ unknown.map((f) => f.promptId).filter(Boolean).join(', ') || 'none' }}.
     </p>
     <p v-else-if="collection.status === 'failed'" class="warnline bad">

@@ -1,7 +1,7 @@
 import { randomInt, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { MODELS, applyParams, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
+import { ComfyUnavailableError, MODELS, applyParams, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
 import type { PromptPlan } from "./promptPlan.ts";
 
 const SEED_MAX = 2 ** 48 - 1;
@@ -123,7 +123,8 @@ export async function runCollection(opts: {
       try {
         ({ images, history } = await client.waitForImages(rec.promptId, frameTimeoutMs));
       } catch (e) {
-        rec.status = /timed out/i.test((e as Error).message) ? "timeout" : "failed";
+        // Indeterminate (timeout or ComfyUI vanished while the accepted job may still run): keep prompt_id, never resubmit.
+        rec.status = /timed out/i.test((e as Error).message) || e instanceof ComfyUnavailableError ? "timeout" : "failed";
         throw e;
       }
       const png = await client.download(images[0]);

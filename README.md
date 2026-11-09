@@ -15,3 +15,4 @@ npm run smoke   # нужен запущенный ComfyUI на 127.0.0.1:8188 и
 
 NS-003: `npm run autopilot` — CLI, см. [docs/ns-003-autopilot.md](docs/ns-003-autopilot.md).
 NS-004: `npm start` — веб-интерфейс на http://127.0.0.1:8787, см. [docs/ns-004-web-mvp.md](docs/ns-004-web-mvp.md).
+NS-005: выбор 1–3 коллекций за один запуск, один вызов Codex на партию — [docs/ns-005-multi-collection.md](docs/ns-005-multi-collection.md).
