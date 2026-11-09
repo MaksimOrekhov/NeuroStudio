@@ -1,11 +1,12 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { ComfyClient } from "../src/comfy.ts";
 import { SelectionError, listCollections, readCollection, safeImagePath, setSelection } from "./collections.ts";
 import { ExportError, planExport, zipStream } from "./export.ts";
+import { getThumbnail } from "./thumbs.ts";
 import { parseCount, parseVariations } from "../src/promptPlan.ts";
 import { RunError, type AutopilotRunner } from "./runner.ts";
 
@@ -15,12 +16,15 @@ export interface AppDeps {
   comfyUrl: string;
   port: number;
   webDist?: string;
+  /** Thumbnail cache (default: ../thumbs next to the collections folder, inside output/). */
+  thumbsDir?: string;
   /** For tests */
   statusClient?: Pick<ComfyClient, "systemStats" | "queue">;
 }
 
 export function buildApp(d: AppDeps) {
   const app = Fastify({ logger: false });
+  const thumbsDir = d.thumbsDir ?? join(dirname(resolve(d.collectionsDir)), "thumbs");
   const status = d.statusClient ?? new ComfyClient(d.comfyUrl, fetch, 2000);
   const allowedHosts = new Set([`127.0.0.1:${d.port}`, `localhost:${d.port}`, "127.0.0.1:5173", "localhost:5173"]);
 
@@ -115,6 +119,25 @@ export function buildApp(d: AppDeps) {
       reply.header("content-disposition", `attachment; filename="${basename(id)}-${file}"`);
     }
     return reply.send(createReadStream(p));
+  });
+
+  app.get("/api/collections/:id/thumbs/:file", async (req, reply) => {
+    const { id, file } = req.params as { id: string; file: string };
+    const p = safeImagePath(d.collectionsDir, id, file);
+    if (!p) return reply.code(404).send({ error: "not found" });
+    try {
+      await stat(p);
+    } catch {
+      return reply.code(404).send({ error: "not found" });
+    }
+    try {
+      reply.type("image/webp").header("cache-control", "private, max-age=3600");
+      return reply.send(createReadStream(await getThumbnail(thumbsDir, id, p)));
+    } catch {
+      // Thumbnail failed: serve the untouched original instead.
+      reply.type("image/png").header("x-thumbnail", "fallback");
+      return reply.send(createReadStream(p));
+    }
   });
 
   if (d.webDist) void app.register(fastifyStatic, { root: resolve(d.webDist) });

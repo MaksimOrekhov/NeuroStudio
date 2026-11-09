@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive } from "vue";
-import { exportUrl, imageUrl, selectBest, type Collection, type ExportStatus, type Frame } from "./api";
+import { exportUrl, imageUrl, selectBest, thumbUrl, type Collection, type ExportStatus, type Frame } from "./api";
 
 const props = defineProps<{ collection: Collection }>();
 const emit = defineEmits<{ open: [frame: number, variant: number]; changed: [result: { selections: Record<string, number>; export: ExportStatus }] }>();
@@ -10,6 +10,9 @@ const MODEL_LABEL: Record<string, string> = { "crimson-oath": "Crimson Oath", du
 /** Variant the user is currently looking at, per frame (defaults to the selected best, else the first finished one). */
 const viewing = reactive<Record<number, number>>({});
 const saveError = reactive({ text: "" });
+/** Images whose file could not be loaded (deleted from disk): shown as a placeholder. */
+const broken = reactive<Record<string, boolean>>({});
+const isBroken = (f: Frame) => !!f.image && broken[`${props.collection.id}/${f.image}`];
 
 // The four scenes, each with its seed variants.
 const scenes = computed(() => {
@@ -62,18 +65,19 @@ const unknown = computed(() => props.collection.frames.filter((f) => f.status ==
     <div class="grid">
       <figure v-for="s in scenes" :key="s.frame">
         <template v-for="f in [current(s.frame, s.variants)]" :key="f.variant">
-          <button v-if="f.image" class="img" :class="{ best: collection.selections[String(s.frame)] === f.variant }" @click="emit('open', s.frame, f.variant)">
-            <img :src="imageUrl(collection.id, f.image)" :alt="f.summary" loading="lazy" decoding="async" />
+          <button v-if="f.image && !isBroken(f)" class="img" :class="{ best: collection.selections[String(s.frame)] === f.variant }" @click="emit('open', s.frame, f.variant)">
+            <img :src="thumbUrl(collection.id, f.image)" :alt="f.summary" loading="lazy" decoding="async" @error="broken[`${collection.id}/${f.image}`] = true" />
             <span v-if="collection.selections[String(s.frame)] === f.variant" class="star">★ Best</span>
           </button>
           <div v-else class="img empty" :class="f.status">
-            <span v-if="f.status === 'submitted'">{{ collection.status === 'running' ? 'Generating…' : 'Unknown state' }}</span>
+            <span v-if="isBroken(f)">File missing</span>
+            <span v-else-if="f.status === 'submitted'">{{ collection.status === 'running' ? 'Generating…' : 'Unknown state' }}</span>
             <span v-else-if="f.status === 'pending'">{{ collection.status === 'running' ? 'Queued' : 'Not generated' }}</span>
             <span v-else>{{ f.status === 'timeout' ? 'Unknown state' : 'Failed' }}</span>
           </div>
           <figcaption>
             <b>{{ s.frame }}</b> {{ MODEL_LABEL[f.model] ?? f.model }}
-            <a v-if="f.image" :href="imageUrl(collection.id, f.image, true)" title="Download PNG">PNG ↓</a>
+            <a v-if="f.image && !isBroken(f)" :href="imageUrl(collection.id, f.image, true)" title="Download PNG">PNG ↓</a>
           </figcaption>
           <div v-if="s.variants.length > 1" class="vars">
             <button
@@ -86,7 +90,7 @@ const unknown = computed(() => props.collection.frames.filter((f) => f.status ==
               v{{ v.variant }}<template v-if="collection.selections[String(s.frame)] === v.variant"> ★</template>
             </button>
           </div>
-          <button v-if="f.image" class="sel" :class="{ on: collection.selections[String(s.frame)] === f.variant }" @click="pick(s.frame, f.variant)">
+          <button v-if="f.image && !isBroken(f)" class="sel" :class="{ on: collection.selections[String(s.frame)] === f.variant }" @click="pick(s.frame, f.variant)">
             {{ collection.selections[String(s.frame)] === f.variant ? "✓ Selected" : "Select Best" }}
           </button>
         </template>

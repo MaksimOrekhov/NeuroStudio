@@ -72,4 +72,5 @@ export const selectBest = (id: string, frame: number, variant: number | null) =>
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ frame, variant }),
   });
+export const thumbUrl = (id: string, file: string) => `/api/collections/${encodeURIComponent(id)}/thumbs/${file}`;
 export const exportUrl = (id: string) => `/api/collections/${encodeURIComponent(id)}/export`;
