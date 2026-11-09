@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { MODELS, loadWorkflow } from "../src/comfy.ts";
+import { ComfyUnavailableError, MODELS, loadWorkflow } from "../src/comfy.ts";
 import { buildJobs, runCollection } from "../src/collection.ts";
 import { CodexError, generatePlan } from "../src/codex.ts";
 import { validatePlan } from "../src/promptPlan.ts";
@@ -73,4 +73,21 @@ test("generatePlan: timeout and bad output raise CodexError after a single launc
   await assert.rejects(generatePlan({ launcher: sleeper, timeoutMs: 300 }), CodexError);
   const silent = { command: process.execPath, args: ["-e", "process.stdin.resume();process.stdin.on('end',()=>{})", "--"] };
   await assert.rejects(generatePlan({ launcher: silent, timeoutMs: 5000 }), /no final message/);
+});
+
+test("ComfyUI disappears after a job was accepted: indeterminate status, prompt_id kept, no resubmit", async () => {
+  const { plan, base } = await load();
+  const dir = await mkdtemp(join(tmpdir(), "ns-"));
+  const { client, calls } = fakeClient({
+    waitForImages: async () => {
+      throw new ComfyUnavailableError("ComfyUI not reachable at http://127.0.0.1:8188: fetch failed");
+    },
+  });
+  await assert.rejects(runCollection({ plan, jobs: buildJobs(plan, base, "demo"), dir, client }), ComfyUnavailableError);
+  assert.equal(calls.submit, 1);
+  const m = JSON.parse(await readFile(join(dir, "collection.json"), "utf8"));
+  assert.equal(m.status, "failed");
+  assert.equal(m.frames[0].status, "timeout"); // "unknown": the accepted job may or may not have finished
+  assert.equal(m.frames[0].promptId, "id-1");
+  assert.equal(m.frames[1].status, "pending");
 });
