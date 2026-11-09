@@ -7,7 +7,7 @@ import { buildApp } from "../server/app.ts";
 import { safeImagePath } from "../server/collections.ts";
 import { AutopilotRunner } from "../server/runner.ts";
 import { loadWorkflow } from "../src/comfy.ts";
-import { generateBatch, loadInstructions, planPrompt, type BatchResult } from "../src/codex.ts";
+import { generateBatch, loadInstructions, planPrompt, type BatchOptions, type BatchResult } from "../src/codex.ts";
 import { strictPlan } from "./fixtures/strictPlan.ts";
 import { PlanError, parseCount, validateBatch } from "../src/promptPlan.ts";
 
@@ -15,7 +15,7 @@ const root = resolve(import.meta.dirname, "..");
 const PORT = 8787;
 const H = { host: `127.0.0.1:${PORT}` };
 
-async function setup(over: { systemStats?: () => Promise<unknown>; plan?: () => Promise<BatchResult>; waitForImages?: () => Promise<unknown> } = {}) {
+async function setup(over: { systemStats?: () => Promise<unknown>; plan?: (o: BatchOptions) => Promise<BatchResult>; waitForImages?: () => Promise<unknown> } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "ns-srv-"));
   const planJson = strictPlan("Server Test");
   let release!: () => void;
@@ -297,4 +297,29 @@ test("feedback: save, read, change, delete, validate, survive restart, old colle
   assert.equal(await readFile(join(dir, "old", "collection.json"), "utf8"), manifest);
   assert.equal(await readFile(join(dir, "old", "prompt-plan.json"), "utf8"), PLAN);
   assert.equal((await readFile(join(dir, "old", "scene-01.png"))).toString(), "png");
+});
+
+test("composition: API validates it (400), old body works, and ONE plan call receives it for the whole batch", async () => {
+  const seen: unknown[] = [];
+  const planJson = strictPlan("Comp");
+  const { app, runner, release } = await setup({
+    plan: async (o) => {
+      seen.push(o.composition);
+      return { plans: Array.from({ length: o.count }, (_, i) => ({ ...planJson, concept: { ...planJson.concept, title: `Comp ${i + 1}` } })), raw: "", ms: 1, tokens: null };
+    },
+  });
+  const body = (composition: unknown) => app.inject({ method: "POST", url: "/api/autopilot/start", headers: H, payload: { collections: 3, variations: 1, composition } as never });
+  for (const bad of ["x", { global: { pose: "nope" } }, { scenes: [{ pose: "inherit" }, 7] }, { scenes: [{}, {}, {}, {}, {}] }, { extra: 1 }]) {
+    assert.equal((await body(bad)).statusCode, 400, JSON.stringify(bad));
+  }
+  assert.equal(seen.length, 0);
+  const comp = { global: { framing: "waist_up" }, scenes: [{ orientation: "direct_front_view" }] };
+  assert.equal((await body(comp)).statusCode, 202);
+  release();
+  while (runner.active) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(seen, [comp]); // one call, 3 collections, same requirements
+  // old API without composition is unchanged
+  assert.equal((await post(app, "", 1, 1)).statusCode, 202);
+  while (runner.active) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(seen[1], undefined);
 });

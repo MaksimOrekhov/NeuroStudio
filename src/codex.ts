@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { compositionPrompt, type Composition } from "./composition.ts";
 import { validateBatch, validatePlan, type PromptPlan } from "./promptPlan.ts";
 
 export class CodexError extends Error {}
@@ -24,7 +25,7 @@ export async function loadInstructions(path = INSTRUCTIONS_PATH): Promise<string
 }
 
 /** instructions + the request. count = 1: a single Prompt Plan; count > 1: a Batch Plan {collections: PromptPlan[]} in the same call. */
-export function planPrompt(instructions: string, theme?: string, avoid: string[] = [], count = 1): string {
+export function planPrompt(instructions: string, theme?: string, avoid: string[] = [], count = 1, composition?: Composition): string {
   const batch = count > 1;
   const themeLine = theme
     ? `Theme requested by the user (use it as the starting point${batch ? " for all collections, but give each its own distinct angle" : ""}): ${JSON.stringify(theme)}`
@@ -46,7 +47,7 @@ The ${count} collections must be substantially different from each other (concep
 
 ---
 Task: ${themeLine}
-${ask}${avoidLine}${distinct}`;
+${ask}${avoidLine}${distinct}${compositionPrompt(composition)}`;
 }
 
 /** Finds how to launch Codex without a shell. On Windows the PATH shim is a .cmd file, so run its JS entry with node. */
@@ -79,6 +80,8 @@ export interface CodexOptions {
   theme?: string;
   /** Titles of recent collections the new concept(s) must differ from. */
   avoid?: string[];
+  /** Optional user composition requirements per scene number (NS-011). */
+  composition?: Composition;
   timeoutMs?: number;
   /** For tests: override the launcher. */
   launcher?: { command: string; args: string[] };
@@ -173,7 +176,7 @@ export async function batchSchema(count: number, planSchemaPath = SCHEMA): Promi
 /** One Codex call for the whole batch; all plans are validated before anything is returned. */
 export async function generateBatch(opts: BatchOptions): Promise<BatchResult> {
   const instructions = await loadInstructions();
-  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count), await batchSchema(opts.count), timeout(opts, opts.count), opts.launcher);
+  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count, opts.composition), await batchSchema(opts.count), timeout(opts, opts.count), opts.launcher);
   return { plans: validateBatch(r.json, opts.count), raw: r.raw, ms: r.ms, tokens: r.tokens };
 }
 
