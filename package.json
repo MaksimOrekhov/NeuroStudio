@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "smoke": "tsx scripts/comfy-smoke-test.ts",
-    "plan:codex": "tsx scripts/prompt-plan-codex.ts",
+    "autopilot": "tsx scripts/autopilot.ts",
     "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
