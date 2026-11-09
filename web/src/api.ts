@@ -10,6 +10,14 @@ export interface Frame {
   error?: string;
 }
 
+export interface Feedback {
+  version: 1;
+  rating: number | null;
+  tags: string[];
+  note: string;
+  updatedAt: string;
+}
+
 export interface Collection {
   id: string;
   title: string;
@@ -20,6 +28,7 @@ export interface Collection {
   frames: Frame[];
   variations: number;
   selections: Record<string, number>;
+  feedback: Feedback | null;
   export: ExportStatus;
 }
 
@@ -74,3 +83,9 @@ export const selectBest = (id: string, frame: number, variant: number | null) =>
   });
 export const thumbUrl = (id: string, file: string) => `/api/collections/${encodeURIComponent(id)}/thumbs/${file}`;
 export const exportUrl = (id: string) => `/api/collections/${encodeURIComponent(id)}/export`;
+export const saveFeedback = (id: string, fb: { rating: number | null; tags: string[]; note: string }) =>
+  json<{ feedback: Feedback | null }>(`/api/collections/${encodeURIComponent(id)}/feedback`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(fb),
+  });

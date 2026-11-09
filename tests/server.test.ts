@@ -250,3 +250,51 @@ test("historic collection (no variant field, scene-01.png) opens as variant 1 an
   assert.equal((await app.inject({ method: "GET", url: "/api/collections/old/images/scene-01.png", headers: H })).statusCode, 200);
   assert.equal((await app.inject({ method: "PUT", url: "/api/collections/old/selection", headers: H, payload: { frame: 1, variant: 1 } })).statusCode, 200);
 });
+
+test("feedback: save, read, change, delete, validate, survive restart, old collections work, sources untouched", async () => {
+  const PLAN = JSON.stringify({ concept: { description: "d" }, frames: [] });
+  const { app, dir } = await setup();
+  await mkdir(join(dir, "old"));
+  await writeFile(join(dir, "old", "scene-01.png"), Buffer.from("png"));
+  const manifest = JSON.stringify({ title: "Old", createdAt: "2026-01-01T00:00:00Z", status: "done", dir, frames: [{ frame: 1, model: "duskrose", seed: 1, status: "done", png: "scene-01.png" }] });
+  await writeFile(join(dir, "old", "collection.json"), manifest);
+  await writeFile(join(dir, "old", "prompt-plan.json"), PLAN);
+  const get = async (a = app) => (await a.inject({ method: "GET", url: "/api/collections/old", headers: H })).json();
+  const put = (payload: unknown) => app.inject({ method: "PUT", url: "/api/collections/old/feedback", headers: H, payload: payload as never });
+
+  assert.equal((await get()).feedback, null); // old collection without feedback.json
+  assert.equal((await put({ rating: 4, tags: ["great_outfit", "weak_concept", "great_outfit"], note: " nice " })).statusCode, 200);
+  let fb = (await get()).feedback;
+  assert.equal(fb.rating, 4);
+  assert.deepEqual(fb.tags, ["great_outfit", "weak_concept"]);
+  assert.equal(fb.note, "nice");
+  assert.equal(fb.version, 1);
+
+  // restart: a brand-new app reads the same data from disk
+  const app2 = buildApp({ runner: {} as never, collectionsDir: dir, comfyUrl: "http://x", port: PORT });
+  assert.equal((await get(app2)).feedback.rating, 4);
+
+  // change, then remove the rating but keep tags
+  assert.equal((await put({ rating: 2, tags: [], note: "" })).statusCode, 200);
+  assert.equal((await get()).feedback.rating, 2);
+  assert.equal((await put({ rating: null, tags: ["bad_anatomy"] })).statusCode, 200);
+  fb = (await get()).feedback;
+  assert.equal(fb.rating, null);
+  assert.deepEqual(fb.tags, ["bad_anatomy"]);
+  // fully empty feedback removes the file
+  assert.equal((await put({ rating: null, tags: [], note: "" })).statusCode, 200);
+  assert.equal((await get()).feedback, null);
+
+  // validation
+  for (const bad of [{ rating: 0 }, { rating: 6 }, { rating: 3.5 }, { rating: "4" }, { tags: ["nope"] }, { tags: "great_outfit" }, { note: 5 }, { note: "x".repeat(501) }, [1]]) {
+    assert.equal((await put(bad)).statusCode, 400, JSON.stringify(bad).slice(0, 40));
+  }
+  assert.equal((await app.inject({ method: "PUT", url: "/api/collections/nope/feedback", headers: H, payload: { rating: 3 } })).statusCode, 404);
+  assert.equal((await app.inject({ method: "PUT", url: "/api/collections/..%2Fx/feedback", headers: H, payload: { rating: 3 } })).statusCode, 404);
+
+  // generation sources are untouched
+  await put({ rating: 5 });
+  assert.equal(await readFile(join(dir, "old", "collection.json"), "utf8"), manifest);
+  assert.equal(await readFile(join(dir, "old", "prompt-plan.json"), "utf8"), PLAN);
+  assert.equal((await readFile(join(dir, "old", "scene-01.png"))).toString(), "png");
+});
