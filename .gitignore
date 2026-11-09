@@ -3,3 +3,4 @@ output/
 dist/
 *.log
 .env
+web/dist/

@@ -1,0 +1,17 @@
+:root {
+  --bg: #0b0c10;
+  --panel: #14161d;
+  --panel-2: #1b1e28;
+  --line: #262a37;
+  --text: #e7e9f0;
+  --muted: #8b90a3;
+  --accent: #7c6cff;
+  --accent-2: #a78bfa;
+  --ok: #3ecf8e;
+  --warn: #f5a524;
+  --bad: #f0506e;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+button, input { font: inherit; }
