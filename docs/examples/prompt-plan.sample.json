@@ -1,0 +1,37 @@
+{
+  "concept": {
+    "title": "The Saltglass Conservatory",
+    "description": "A portrait set following one heroine through a misted seaside glasshouse and its adjoining tide gardens, bound by sea-glass teal, tarnished brass, muted plum, and the hush of the blue hour.",
+    "heroine": "Adult woman, 25 years old, warm olive skin, heart-shaped face, amber eyes, a small beauty mark below her left eye, slender build, long raven-black hair with one silver streak."
+  },
+  "frames": [
+    {
+      "frame": 1,
+      "model": "crimson-oath",
+      "summary": "She reaches for a glowing lantern in the conservatory’s flooded aisle.",
+      "positive": "realistic, masterpiece, best quality, ultra detailed, absurdres, sharp focus, refined semi-realistic rendering, adult woman, 25 years old, warm olive skin, heart-shaped face, amber eyes, a small beauty mark below her left eye, slender build, long raven-black hair with one silver streak, garnet velvet wrap coat with brass clasps over an ivory high-neck dress, loose waves with one small silver-thread braid, reaching toward a hanging sea-glass lantern, low-angle three-quarter view, flooded glasshouse aisle with reflections stretching into the distance, warm lantern glow against dusky rose sunset and sea mist, painterly dramatic light",
+      "negative": "worst quality, low quality, blurry, bad anatomy, bad hands, extra fingers, signature, watermark, text, flat lighting, muddy colors, cluttered reflections"
+    },
+    {
+      "frame": 2,
+      "model": "duskrose",
+      "summary": "She pauses on the rooftop orangery balcony as the tide disappears into mist.",
+      "positive": "realistic, masterpiece, best quality, ultra detailed, absurdres, sharp focus, refined semi-realistic rendering, adult woman, 25 years old, warm olive skin, heart-shaped face, amber eyes, a small beauty mark below her left eye, slender build, long raven-black hair with one silver streak, muted mauve silk blouse with a charcoal pleated skirt and fine brass buttons, braided crown pinned neatly with loose tendrils, seated sideways on a narrow iron bench with one hand resting on the rail, high-angle view from the balcony steps, rooftop orangery above a misty shoreline with glass roof panels catching the last light, soft twilight in lavender, teal, and rose-grey tones",
+      "negative": "worst quality, low quality, blurry, bad anatomy, bad hands, extra fingers, signature, watermark, text, harsh highlights, saturated colors, busy background"
+    },
+    {
+      "frame": 3,
+      "model": "crimson-oath",
+      "summary": "She studies floating sea-glass petals beside the old tiled tide basin.",
+      "positive": "realistic, masterpiece, best quality, ultra detailed, absurdres, sharp focus, refined semi-realistic rendering, adult woman, 25 years old, warm olive skin, heart-shaped face, amber eyes, a small beauty mark below her left eye, slender build, long raven-black hair with one silver streak, deep teal riding jacket with copper embroidery over a flowing black skirt, sleek low ponytail secured with a silver clasp, kneeling beside the water with one hand hovering over floating petals, ground-level side view, circular tiled cistern open to the night sky with brass pipes and tidewater ripples, amber candlelight and bold painterly shadows against cool blue glass",
+      "negative": "worst quality, low quality, blurry, bad anatomy, bad hands, extra fingers, signature, watermark, text, flat colors, malformed reflections, excessive ornament"
+    },
+    {
+      "frame": 4,
+      "model": "duskrose",
+      "summary": "She climbs the conservatory’s spiral tower stair beneath a fading blue sky.",
+      "positive": "realistic, masterpiece, best quality, ultra detailed, absurdres, sharp focus, refined semi-realistic rendering, adult woman, 25 years old, warm olive skin, heart-shaped face, amber eyes, a small beauty mark below her left eye, slender build, long raven-black hair with one silver streak, pale blue-grey traveling cloak over a plum dress with a narrow brass belt, hair braided into a compact bun with the silver streak woven through, ascending the curved stair with one hand on the rail and her gaze turned toward the sea, overhead rear three-quarter view, narrow spiral stair inside the conservatory’s glass tower with distant harbor lights beyond the panes, muted twilight haze and soft rose-blue shadows",
+      "negative": "worst quality, low quality, blurry, bad anatomy, bad hands, extra fingers, signature, watermark, text, harsh contrast, bright midday light, crowded composition"
+    }
+  ]
+}
