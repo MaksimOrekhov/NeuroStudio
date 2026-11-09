@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { ComfyClient } from "../src/comfy.ts";
-import { SelectionError, listCollections, readCollection, safeImagePath, setSelection } from "./collections.ts";
+import { FeedbackError, SelectionError, listCollections, readCollection, safeImagePath, setFeedback, setSelection } from "./collections.ts";
 import { ExportError, planExport, zipStream } from "./export.ts";
 import { getThumbnail } from "./thumbs.ts";
 import { parseCount, parseVariations } from "../src/promptPlan.ts";
@@ -101,6 +101,15 @@ export function buildApp(d: AppDeps) {
       return { selections, export: (await readCollection(d.collectionsDir, id, activeId()))?.export };
     } catch (e) {
       if (e instanceof SelectionError) return reply.code(e.message === "collection not found" ? 404 : 400).send({ error: e.message });
+      throw e;
+    }
+  });
+
+  app.put("/api/collections/:id/feedback", async (req, reply) => {
+    try {
+      return { feedback: await setFeedback(d.collectionsDir, (req.params as { id: string }).id, req.body ?? {}) };
+    } catch (e) {
+      if (e instanceof FeedbackError) return reply.code(e.message === "collection not found" ? 404 : 400).send({ error: e.message });
       throw e;
     }
   });

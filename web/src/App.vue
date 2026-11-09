@@ -20,6 +20,9 @@ function onSelections(c: Collection, r: { selections: Record<string, number>; ex
   c.selections = r.selections;
   c.export = r.export;
 }
+function onFeedback(c: Collection, fb: Collection["feedback"]) {
+  c.feedback = fb;
+}
 let timer: number | undefined;
 
 const run = computed(() => status.value?.run);
@@ -144,6 +147,7 @@ onBeforeUnmount(() => clearTimeout(timer));
         :collection="c"
         @open="(f, v) => (lightbox = { id: c.id, frame: f, variant: v })"
         @changed="(sel) => onSelections(c, sel)"
+        @feedback="(fb) => onFeedback(c, fb)"
       />
     </section>
 

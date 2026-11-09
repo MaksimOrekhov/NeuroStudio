@@ -1,4 +1,4 @@
-import { readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { Manifest } from "../src/collection.ts";
 import type { PromptPlan } from "../src/promptPlan.ts";
@@ -29,10 +29,39 @@ export interface CollectionView {
   variations: number;
   /** Selected best variant per frame number (from selections.json). */
   selections: Record<string, number>;
+  /** Subjective quality feedback for the whole collection (feedback.json); null when none was given. */
+  feedback: Feedback | null;
   /** Whether the four final images can be exported as a ZIP (see export.ts). */
   export: ExportStatus;
   codex?: Manifest["codex"];
   comfySeconds?: number;
+}
+
+export const FEEDBACK_TAGS = [
+  "beautiful_heroine",
+  "great_outfit",
+  "good_composition",
+  "beautiful_lighting",
+  "original_concept",
+  "bad_anatomy",
+  "inconsistent_heroine",
+  "poor_outfit",
+  "repetitive_composition",
+  "weak_concept",
+] as const;
+export const FEEDBACK_NOTE_MAX = 500;
+
+/**
+ * Stored in <collection>/feedback.json. Linked to the Prompt Plan and the Best picks only through the collection id
+ * (no prompts or PNG paths are duplicated here). A rating is a subjective verdict on the whole collection,
+ * unlike Best, which is a relative comparison of seed variants of one prompt.
+ */
+export interface Feedback {
+  version: 1;
+  rating: number | null;
+  tags: string[];
+  note: string;
+  updatedAt: string;
 }
 
 const ID = /^[A-Za-z0-9._-]+$/;
@@ -90,6 +119,18 @@ async function readSelections(dir: string, id: string): Promise<Record<string, n
   }
 }
 
+async function readFeedback(dir: string, id: string): Promise<Feedback | null> {
+  try {
+    const raw = JSON.parse(await readFile(join(dir, id, "feedback.json"), "utf8")) as Partial<Feedback>;
+    const rating = Number.isInteger(raw.rating) && raw.rating! >= 1 && raw.rating! <= 5 ? raw.rating! : null;
+    const tags = Array.isArray(raw.tags) ? raw.tags.filter((t): t is string => (FEEDBACK_TAGS as readonly string[]).includes(t as string)) : [];
+    const note = typeof raw.note === "string" ? raw.note.slice(0, FEEDBACK_NOTE_MAX) : "";
+    return { version: 1, rating, tags, note, updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : "" };
+  } catch {
+    return null; // missing (old collection) or unreadable: behaves as "no feedback"
+  }
+}
+
 export async function readCollection(dir: string, id: string, activeId?: string): Promise<CollectionView | null> {
   if (!ID.test(id)) return null;
   try {
@@ -125,6 +166,7 @@ export async function readCollection(dir: string, id: string, activeId?: string)
       frames,
       variations: m.variations ?? 1,
       selections,
+      feedback: await readFeedback(dir, id),
       export: { ready: false, resolved: 0 },
       codex: m.codex,
       comfySeconds: m.comfySeconds,
@@ -180,4 +222,30 @@ export async function setSelection(dir: string, id: string, frame: unknown, vari
   await writeFile(file + ".tmp", JSON.stringify(sel, null, 2));
   await rename(file + ".tmp", file);
   return sel;
+}
+
+export class FeedbackError extends Error {}
+
+/**
+ * Replaces the feedback of a collection. Everything is optional (rating null = no rating).
+ * Entirely empty feedback removes feedback.json. Only feedback.json is written, atomically.
+ */
+export async function setFeedback(dir: string, id: string, input: unknown): Promise<Feedback | null> {
+  if (!ID.test(id) || !(await readCollection(dir, id))) throw new FeedbackError("collection not found");
+  if (typeof input !== "object" || input === null || Array.isArray(input)) throw new FeedbackError("body must be an object");
+  const { rating = null, tags = [], note = "" } = input as Record<string, unknown>;
+  if (rating !== null && (typeof rating !== "number" || !Number.isInteger(rating) || rating < 1 || rating > 5)) throw new FeedbackError("rating must be an integer 1-5 or null");
+  if (!Array.isArray(tags) || tags.some((t) => typeof t !== "string" || !(FEEDBACK_TAGS as readonly string[]).includes(t))) throw new FeedbackError("unknown feedback tag");
+  if (typeof note !== "string") throw new FeedbackError("note must be a string");
+  if (note.length > FEEDBACK_NOTE_MAX) throw new FeedbackError(`note is too long (max ${FEEDBACK_NOTE_MAX} characters)`);
+  const uniqueTags = FEEDBACK_TAGS.filter((t) => tags.includes(t));
+  const file = join(dir, id, "feedback.json");
+  if (rating === null && !uniqueTags.length && !note.trim()) {
+    await unlink(file).catch(() => undefined);
+    return null;
+  }
+  const fb: Feedback = { version: 1, rating, tags: uniqueTags, note: note.trim(), updatedAt: new Date().toISOString() };
+  await writeFile(file + ".tmp", JSON.stringify(fb, null, 2));
+  await rename(file + ".tmp", file);
+  return fb;
 }

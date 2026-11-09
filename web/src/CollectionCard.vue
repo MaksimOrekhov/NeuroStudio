@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, reactive } from "vue";
-import { exportUrl, imageUrl, selectBest, thumbUrl, type Collection, type ExportStatus, type Frame } from "./api";
+import { computed, reactive, ref } from "vue";
+import { exportUrl, imageUrl, saveFeedback, selectBest, thumbUrl, type Collection, type ExportStatus, type Feedback, type Frame } from "./api";
 
 const props = defineProps<{ collection: Collection }>();
-const emit = defineEmits<{ open: [frame: number, variant: number]; changed: [result: { selections: Record<string, number>; export: ExportStatus }] }>();
+const emit = defineEmits<{ open: [frame: number, variant: number]; changed: [result: { selections: Record<string, number>; export: ExportStatus }]; feedback: [fb: Feedback | null] }>();
 
 const MODEL_LABEL: Record<string, string> = { "crimson-oath": "Crimson Oath", duskrose: "Duskrose" };
 
@@ -36,6 +36,62 @@ async function pick(frame: number, variant: number) {
     saveError.text = (e as Error).message;
   }
 }
+
+// Collection feedback (optional, saved immediately; independent of Select Best and ZIP export).
+const GOOD = [
+  ["beautiful_heroine", "Beautiful heroine"],
+  ["great_outfit", "Great outfit"],
+  ["good_composition", "Good composition"],
+  ["beautiful_lighting", "Beautiful lighting"],
+  ["original_concept", "Original concept"],
+] as const;
+const BAD = [
+  ["bad_anatomy", "Bad anatomy"],
+  ["inconsistent_heroine", "Inconsistent heroine"],
+  ["poor_outfit", "Poor outfit"],
+  ["repetitive_composition", "Repetitive composition"],
+  ["weak_concept", "Weak concept"],
+] as const;
+const NOTE_MAX = 500;
+const fbOpen = ref(false);
+const fbHover = ref(0);
+const fbError = ref("");
+const fbSaving = ref(false);
+const fbDraft = reactive({ rating: props.collection.feedback?.rating ?? (null as number | null), tags: [...(props.collection.feedback?.tags ?? [])], note: props.collection.feedback?.note ?? "" });
+let fbSavedNote = fbDraft.note;
+
+async function persistFeedback() {
+  fbSaving.value = true;
+  fbError.value = "";
+  try {
+    const r = await saveFeedback(props.collection.id, { rating: fbDraft.rating, tags: fbDraft.tags, note: fbDraft.note });
+    fbSavedNote = fbDraft.note;
+    emit("feedback", r.feedback);
+  } catch (e) {
+    fbError.value = (e as Error).message;
+  } finally {
+    fbSaving.value = false;
+  }
+}
+function rate(n: number) {
+  fbDraft.rating = fbDraft.rating === n ? null : n; // clicking the current rating clears it
+  void persistFeedback();
+}
+function toggleTag(t: string) {
+  const i = fbDraft.tags.indexOf(t);
+  if (i >= 0) fbDraft.tags.splice(i, 1);
+  else fbDraft.tags.push(t);
+  void persistFeedback();
+}
+function saveNote() {
+  if (fbDraft.note !== fbSavedNote) void persistFeedback();
+}
+const fbSummary = computed(() => {
+  const f = props.collection.feedback;
+  if (!f) return "Rate this collection";
+  const n = f.tags.length;
+  return (f.rating ? `${"★".repeat(f.rating)}${"☆".repeat(5 - f.rating)}` : "No rating") + (n ? ` · ${n} tag${n > 1 ? "s" : ""}` : "") + (f.note ? " · note" : "");
+});
 
 const badge = computed(() => {
   const c = props.collection;
@@ -104,6 +160,38 @@ const unknown = computed(() => props.collection.frames.filter((f) => f.status ==
       <span v-else class="why">4 scenes · original PNG files</span>
     </div>
 
+    <div class="fb">
+      <button class="fbtoggle" :aria-expanded="fbOpen" @click="fbOpen = !fbOpen">
+        <span>{{ fbOpen ? "▾" : "▸" }} Feedback</span>
+        <span class="fbsum">{{ fbSummary }}</span>
+      </button>
+      <div v-if="fbOpen" class="fbbody">
+        <div class="stars" role="radiogroup" aria-label="Collection rating" @mouseleave="fbHover = 0">
+          <button
+            v-for="n in 5"
+            :key="n"
+            class="starbtn"
+            :class="{ on: n <= (fbHover || fbDraft.rating || 0) }"
+            role="radio"
+            :aria-checked="fbDraft.rating === n"
+            :aria-label="`${n} star${n > 1 ? 's' : ''}`"
+            @mouseenter="fbHover = n"
+            @click="rate(n)"
+          >★</button>
+          <button v-if="fbDraft.rating" class="clear" @click="rate(fbDraft.rating)">Clear</button>
+        </div>
+        <div class="tags">
+          <button v-for="[k, label] in GOOD" :key="k" class="tag good" :class="{ on: fbDraft.tags.includes(k) }" @click="toggleTag(k)">{{ label }}</button>
+        </div>
+        <div class="tags">
+          <button v-for="[k, label] in BAD" :key="k" class="tag bad" :class="{ on: fbDraft.tags.includes(k) }" @click="toggleTag(k)">{{ label }}</button>
+        </div>
+        <textarea v-model="fbDraft.note" class="note" rows="2" :maxlength="NOTE_MAX" placeholder="Optional note (what worked, what didn't)" @blur="saveNote"></textarea>
+        <small class="fbmeta">{{ fbDraft.note.length }}/{{ NOTE_MAX }}<template v-if="fbSaving"> · saving…</template></small>
+        <p v-if="fbError" class="warnline bad">Could not save feedback: {{ fbError }}</p>
+      </div>
+    </div>
+
     <p v-if="saveError.text" class="warnline bad">Could not save selection: {{ saveError.text }}</p>
     <p v-if="collection.status !== 'running' && unknown.length" class="warnline">
       Frame state is unknown (run interrupted or ComfyUI went away). Not re-submitted automatically. Check ComfyUI history for
@@ -150,6 +238,20 @@ figcaption a { margin-left: auto; color: var(--accent-2); text-decoration: none;
 .dl { padding: 9px 16px; border-radius: 10px; border: 0; font-size: 14px; font-weight: 600; color: #fff; background: linear-gradient(135deg, var(--accent), #5b8cff); text-decoration: none; cursor: pointer; }
 .dl.off { background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); cursor: not-allowed; font-weight: 500; }
 .why { font-size: 13px; color: var(--muted); }
+.fb { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.fbtoggle { display: flex; justify-content: space-between; gap: 12px; width: 100%; background: none; border: 0; padding: 2px 0; color: var(--text); font-size: 14px; cursor: pointer; }
+.fbsum { color: var(--muted); font-size: 13px; }
+.fbbody { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.stars { display: flex; align-items: center; gap: 2px; }
+.starbtn { background: none; border: 0; padding: 0 3px; font-size: 26px; line-height: 1; color: var(--line); cursor: pointer; }
+.starbtn.on { color: #f5b942; }
+.clear { margin-left: 10px; background: none; border: 0; color: var(--muted); font-size: 13px; cursor: pointer; text-decoration: underline; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag { padding: 4px 10px; font-size: 12px; border-radius: 99px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); cursor: pointer; }
+.tag.good.on { background: #10291f; color: var(--ok); border-color: var(--ok); }
+.tag.bad.on { background: #2a1219; color: var(--bad); border-color: var(--bad); }
+.note { width: 100%; box-sizing: border-box; resize: vertical; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; font-size: 13px; }
+.fbmeta { margin-top: -6px; }
 .warnline { font-size: 13px; color: var(--warn); margin: 12px 0 0; word-break: break-all; }
 .warnline.bad { color: var(--bad); }
 </style>
