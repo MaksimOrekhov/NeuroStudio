@@ -47,3 +47,32 @@ export function summarize(p: PromptPlan): string {
   for (const f of p.frames) lines.push(`  #${f.frame} [${f.model}] ${f.summary}`);
   return lines.join("\n");
 }
+
+export const MAX_COLLECTIONS = 3;
+
+/** Accepts 1..MAX_COLLECTIONS (integer); undefined means 1. */
+export function parseCount(x: unknown): number {
+  if (x === undefined || x === null) return 1;
+  if (typeof x !== "number" || !Number.isInteger(x) || x < 1 || x > MAX_COLLECTIONS) {
+    throw new PlanError(`collections must be an integer from 1 to ${MAX_COLLECTIONS}`);
+  }
+  return x;
+}
+
+/** Batch Plan = { collections: PromptPlan[] }. Exactly `count` valid plans with distinct titles. */
+export function validateBatch(x: unknown, count: number): PromptPlan[] {
+  const list = (x as { collections?: unknown })?.collections;
+  if (!Array.isArray(list) || list.length !== count) {
+    throw new PlanError(`Batch plan must contain exactly ${count} collections, got ${Array.isArray(list) ? list.length : "none"}`);
+  }
+  const plans = list.map((p, i) => {
+    try {
+      return validatePlan(p);
+    } catch (e) {
+      throw new PlanError(`Collection ${i + 1}: ${(e as Error).message}`);
+    }
+  });
+  const titles = new Set(plans.map((p) => p.concept.title.trim().toLowerCase()));
+  if (titles.size !== plans.length) throw new PlanError("Collections in a batch must have distinct concepts (duplicate title)");
+  return plans;
+}

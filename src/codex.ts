@@ -1,28 +1,15 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { validatePlan, type PromptPlan } from "./promptPlan.ts";
+import { validateBatch, validatePlan, type PromptPlan } from "./promptPlan.ts";
 
 export class CodexError extends Error {}
 
 const SCHEMA = resolve(import.meta.dirname, "../schemas/prompt-plan.schema.json");
 
-export function planPrompt(theme?: string, avoid: string[] = []): string {
-  const themeLine = theme
-    ? `Theme requested by the user (use it as the starting point): ${JSON.stringify(theme)}`
-    : "No theme is given: invent ONE original concept yourself.";
-  const avoidLine = avoid.length
-    ? `
-Concepts already created (do NOT repeat or resemble them; propose a substantially different concept, setting, palette and mood): ${avoid.map((t) => JSON.stringify(t)).join(", ")}.`
-    : "";
-  return `You are the creative director of NeuroDreams, a collection of semi-realistic portrait sets.
-${themeLine}
-Return a Prompt Plan as JSON matching the supplied schema.${avoidLine}
-
-Rules:
-- Exactly 4 frames, numbered 1-4, one single adult heroine (age 21+, state "adult woman, 25 years old" or similar in every positive prompt). Same heroine look in all frames (put her fixed look in concept.heroine and repeat it in each positive prompt).
+const RULES = `- Exactly 4 frames, numbered 1-4, one single adult heroine (age 21+, state "adult woman, 25 years old" or similar in every positive prompt). Same heroine look in all frames of a collection (put her fixed look in concept.heroine and repeat it in each positive prompt).
 - Frames 1 and 3 use model "crimson-oath", frames 2 and 4 use "duskrose". Both are anime-lineage checkpoints driven by comma-separated tags: start positive with quality tags (realistic, masterpiece, best quality, ultra detailed, absurdres, sharp focus, refined semi-realistic rendering), then subject, outfit, hairstyle, pose, setting, lighting. Crimson Oath: warmer, painterly, dramatic. Duskrose: softer, moodier, twilight palettes.
 - One coherent concept with visual unity (palette, location family, mood), but each frame differs in outfit, hairstyle, pose and viewing-angle wording, and scene composition. No repeated scenes.
 - Beautiful, tasteful, non-explicit.
@@ -30,6 +17,32 @@ Rules:
 - negative: a concise tag list adapted per model (worst quality, low quality, blurry, bad anatomy, bad hands, extra fingers, signature, watermark, text, plus anything frame-specific).
 - summary: one short sentence describing the frame.
 Return only the JSON.`;
+
+/** count = 1: a single Prompt Plan; count > 1: a Batch Plan {collections: PromptPlan[]} in the same call. */
+export function planPrompt(theme?: string, avoid: string[] = [], count = 1): string {
+  const batch = count > 1;
+  const themeLine = theme
+    ? `Theme requested by the user (use it as the starting point${batch ? " for all collections, but give each its own distinct angle" : ""}): ${JSON.stringify(theme)}`
+    : batch
+      ? `No theme is given: invent ${count} original concepts yourself.`
+      : "No theme is given: invent ONE original concept yourself.";
+  const avoidLine = avoid.length
+    ? `
+Concepts already created (do NOT repeat or resemble them; propose a substantially different concept, setting, palette and mood): ${avoid.map((t) => JSON.stringify(t)).join(", ")}.`
+    : "";
+  const ask = batch
+    ? `Return a Batch Plan: JSON {"collections": [...]} with exactly ${count} Prompt Plans matching the supplied schema.`
+    : "Return a Prompt Plan as JSON matching the supplied schema.";
+  const distinct = batch
+    ? `
+The ${count} collections must be substantially different from each other: different title, setting, palette, mood, heroine appearance and wardrobe themes. Never repeat a concept inside the batch.`
+    : "";
+  return `You are the creative director of NeuroDreams, a collection of semi-realistic portrait sets.
+${themeLine}
+${ask}${avoidLine}${distinct}
+
+${batch ? "Rules (apply to every collection):" : "Rules:"}
+${RULES}`;
 }
 
 /** Finds how to launch Codex without a shell. On Windows the PATH shim is a .cmd file, so run its JS entry with node. */
@@ -42,28 +55,42 @@ export function resolveCodex(): { command: string; args: string[] } {
   return { command: "codex", args: [] };
 }
 
+type Tokens = { input?: number; cachedInput?: number; output?: number; total?: number } | null;
+
 export interface CodexResult {
   plan: PromptPlan;
   raw: string;
   ms: number;
-  tokens: { input?: number; cachedInput?: number; output?: number; total?: number } | null;
+  tokens: Tokens;
+}
+
+export interface BatchResult {
+  plans: PromptPlan[];
+  raw: string;
+  ms: number;
+  tokens: Tokens;
 }
 
 export interface CodexOptions {
   theme?: string;
-  /** Titles of recent collections the new concept must differ from. */
+  /** Titles of recent collections the new concept(s) must differ from. */
   avoid?: string[];
   timeoutMs?: number;
   /** For tests: override the launcher. */
   launcher?: { command: string; args: string[] };
 }
 
-/** Exactly one Codex invocation. No retries: any failure throws CodexError. */
-export async function generatePlan(opts: CodexOptions = {}): Promise<CodexResult> {
-  const { command, args } = opts.launcher ?? resolveCodex();
-  const timeoutMs = opts.timeoutMs ?? Number(process.env.CODEX_TIMEOUT_MS ?? 300_000);
+export interface BatchOptions extends CodexOptions {
+  count: number;
+}
+
+/** Exactly one Codex process. No retries: any failure throws CodexError. Returns the parsed final message. */
+async function runCodex(prompt: string, schema: object, timeoutMs: number, launcher = resolveCodex()) {
+  const { command, args } = launcher;
   const dir = await mkdtemp(join(tmpdir(), "neurostudio-codex-"));
   const outFile = join(dir, "last-message.json");
+  const schemaFile = join(dir, "schema.json");
+  await writeFile(schemaFile, JSON.stringify(schema));
   const full = [
     ...args,
     "exec",
@@ -72,7 +99,7 @@ export async function generatePlan(opts: CodexOptions = {}): Promise<CodexResult
     "--ephemeral",
     "--skip-git-repo-check",
     "--json",
-    "--output-schema", SCHEMA,
+    "--output-schema", schemaFile,
     "-o", outFile,
     "-",
   ];
@@ -98,7 +125,7 @@ export async function generatePlan(opts: CodexOptions = {}): Promise<CodexResult
         const detail = [...out.split("\n"), ...err.split("\n")].filter((l) => /error|not supported|login|auth/i.test(l)).slice(0, 3).join(" | ");
         rej(new CodexError(`Codex exited with code ${code}. ${detail.slice(0, 600)}`));
       });
-      child.stdin.end(planPrompt(opts.theme, opts.avoid));
+      child.stdin.end(prompt);
     });
     let raw: string;
     try {
@@ -112,14 +139,36 @@ export async function generatePlan(opts: CodexOptions = {}): Promise<CodexResult
     } catch {
       throw new CodexError("Codex final message is not valid JSON");
     }
-    return { plan: validatePlan(json), raw, ms: Date.now() - t0, tokens: parseUsage(stdout) };
+    return { json, raw, ms: Date.now() - t0, tokens: parseUsage(stdout) };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
+const timeout = (o: CodexOptions, count: number) => o.timeoutMs ?? Number(process.env.CODEX_TIMEOUT_MS ?? 300_000) * count;
+
+/** One Codex call, one collection. */
+export async function generatePlan(opts: CodexOptions = {}): Promise<CodexResult> {
+  const schema = JSON.parse(await readFile(SCHEMA, "utf8"));
+  const r = await runCodex(planPrompt(opts.theme, opts.avoid), schema, timeout(opts, 1), opts.launcher);
+  return { plan: validatePlan(r.json), raw: r.raw, ms: r.ms, tokens: r.tokens };
+}
+
+/** One Codex call for the whole batch; all plans are validated before anything is returned. */
+export async function generateBatch(opts: BatchOptions): Promise<BatchResult> {
+  const plan = JSON.parse(await readFile(SCHEMA, "utf8"));
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["collections"],
+    properties: { collections: { type: "array", minItems: opts.count, maxItems: opts.count, items: plan } },
+  };
+  const r = await runCodex(planPrompt(opts.theme, opts.avoid, opts.count), schema, timeout(opts, opts.count), opts.launcher);
+  return { plans: validateBatch(r.json, opts.count), raw: r.raw, ms: r.ms, tokens: r.tokens };
+}
+
 /** Reads token usage from `codex exec --json` events (turn.completed). */
-export function parseUsage(jsonl: string): CodexResult["tokens"] {
+export function parseUsage(jsonl: string): Tokens {
   for (const line of jsonl.split("\n").reverse()) {
     if (!line.includes("turn.completed")) continue;
     try {
