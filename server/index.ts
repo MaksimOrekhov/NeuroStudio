@@ -18,6 +18,6 @@ const runner = new AutopilotRunner({
   log: (s) => console.log(s),
 });
 
-const app = buildApp({ runner, collectionsDir, comfyUrl, port, webDist: join(root, "web/dist") });
+const app = buildApp({ runner, collectionsDir, thumbsDir: process.env.THUMBS_DIR ?? join(root, "output/thumbs"), comfyUrl, port, webDist: join(root, "web/dist") });
 await app.listen({ host: "127.0.0.1", port });
 console.log(`NeuroStudio: http://127.0.0.1:${port}  (ComfyUI: ${comfyUrl})`);
