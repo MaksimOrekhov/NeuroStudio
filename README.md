@@ -13,4 +13,5 @@ npm test
 npm run smoke   # нужен запущенный ComfyUI на 127.0.0.1:8188 и пустая очередь
 ```
 
-NS-003: `npm run autopilot` (dry run) / `npm run autopilot -- --execute` — см. [docs/ns-003-autopilot.md](docs/ns-003-autopilot.md).
+NS-003: `npm run autopilot` — CLI, см. [docs/ns-003-autopilot.md](docs/ns-003-autopilot.md).
+NS-004: `npm start` — веб-интерфейс на http://127.0.0.1:8787, см. [docs/ns-004-web-mvp.md](docs/ns-004-web-mvp.md).

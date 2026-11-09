@@ -9,13 +9,17 @@ export class CodexError extends Error {}
 
 const SCHEMA = resolve(import.meta.dirname, "../schemas/prompt-plan.schema.json");
 
-export function planPrompt(theme?: string): string {
+export function planPrompt(theme?: string, avoid: string[] = []): string {
   const themeLine = theme
     ? `Theme requested by the user (use it as the starting point): ${JSON.stringify(theme)}`
     : "No theme is given: invent ONE original concept yourself.";
+  const avoidLine = avoid.length
+    ? `
+Concepts already created (do NOT repeat or resemble them; propose a substantially different concept, setting, palette and mood): ${avoid.map((t) => JSON.stringify(t)).join(", ")}.`
+    : "";
   return `You are the creative director of NeuroDreams, a collection of semi-realistic portrait sets.
 ${themeLine}
-Return a Prompt Plan as JSON matching the supplied schema.
+Return a Prompt Plan as JSON matching the supplied schema.${avoidLine}
 
 Rules:
 - Exactly 4 frames, numbered 1-4, one single adult heroine (age 21+, state "adult woman, 25 years old" or similar in every positive prompt). Same heroine look in all frames (put her fixed look in concept.heroine and repeat it in each positive prompt).
@@ -47,6 +51,8 @@ export interface CodexResult {
 
 export interface CodexOptions {
   theme?: string;
+  /** Titles of recent collections the new concept must differ from. */
+  avoid?: string[];
   timeoutMs?: number;
   /** For tests: override the launcher. */
   launcher?: { command: string; args: string[] };
@@ -92,7 +98,7 @@ export async function generatePlan(opts: CodexOptions = {}): Promise<CodexResult
         const detail = [...out.split("\n"), ...err.split("\n")].filter((l) => /error|not supported|login|auth/i.test(l)).slice(0, 3).join(" | ");
         rej(new CodexError(`Codex exited with code ${code}. ${detail.slice(0, 600)}`));
       });
-      child.stdin.end(planPrompt(opts.theme));
+      child.stdin.end(planPrompt(opts.theme, opts.avoid));
     });
     let raw: string;
     try {

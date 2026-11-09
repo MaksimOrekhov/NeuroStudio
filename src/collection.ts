@@ -78,6 +78,8 @@ export async function runCollection(opts: {
   codex?: Manifest["codex"];
   frameTimeoutMs?: number;
   log?: (s: string) => void;
+  /** Called after every manifest save (progress for UIs). */
+  onProgress?: (m: Manifest) => void;
 }): Promise<Manifest> {
   const { plan, jobs, dir, client } = opts;
   const log = opts.log ?? (() => {});
@@ -93,7 +95,10 @@ export async function runCollection(opts: {
     codex: opts.codex,
     frames: jobs.map((j) => ({ frame: j.frame, model: j.model, seed: j.seed, status: "pending" })),
   };
-  const save = () => writeFile(join(dir, "collection.json"), JSON.stringify(m, null, 2));
+  const save = async () => {
+    await writeFile(join(dir, "collection.json"), JSON.stringify(m, null, 2));
+    opts.onProgress?.(m);
+  };
   const t0 = Date.now();
 
   try {

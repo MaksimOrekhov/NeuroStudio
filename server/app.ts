@@ -1,0 +1,86 @@
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { basename, resolve } from "node:path";
+import Fastify from "fastify";
+import fastifyStatic from "@fastify/static";
+import { ComfyClient } from "../src/comfy.ts";
+import { listCollections, readCollection, safeImagePath } from "./collections.ts";
+import { RunError, type AutopilotRunner } from "./runner.ts";
+
+export interface AppDeps {
+  runner: AutopilotRunner;
+  collectionsDir: string;
+  comfyUrl: string;
+  port: number;
+  webDist?: string;
+  /** For tests */
+  statusClient?: Pick<ComfyClient, "systemStats" | "queue">;
+}
+
+export function buildApp(d: AppDeps) {
+  const app = Fastify({ logger: false });
+  const status = d.statusClient ?? new ComfyClient(d.comfyUrl, fetch, 2000);
+  const allowedHosts = new Set([`127.0.0.1:${d.port}`, `localhost:${d.port}`, "127.0.0.1:5173", "localhost:5173"]);
+
+  // Local-only hardening: block DNS rebinding (Host header) and cross-site POSTs (Origin header).
+  app.addHook("onRequest", async (req, reply) => {
+    if (!allowedHosts.has(String(req.headers.host))) return reply.code(403).send({ error: "forbidden host" });
+    const origin = req.headers.origin;
+    if (req.method !== "GET" && req.method !== "HEAD" && origin && !allowedHosts.has(origin.replace(/^https?:\/\//, ""))) {
+      return reply.code(403).send({ error: "forbidden origin" });
+    }
+  });
+
+  app.get("/api/status", async () => {
+    let comfy: Record<string, unknown>;
+    try {
+      const [s, q] = await Promise.all([status.systemStats(), status.queue()]);
+      comfy = { ok: true, version: s.system.comfyui_version, queueRunning: q.queue_running.length, queuePending: q.queue_pending.length };
+    } catch (e) {
+      comfy = { ok: false, error: (e as Error).message };
+    }
+    return { comfy, run: d.runner.state };
+  });
+
+  app.post("/api/autopilot/start", async (req, reply) => {
+    const body = (req.body ?? {}) as { theme?: unknown };
+    const theme = typeof body.theme === "string" ? body.theme.trim().slice(0, 200) : "";
+    try {
+      return reply.code(202).send(await d.runner.start(theme || undefined));
+    } catch (e) {
+      if (e instanceof RunError) return reply.code(e.httpStatus).send({ error: e.message, code: e.code });
+      throw e;
+    }
+  });
+
+  const activeId = () => (d.runner.active ? d.runner.state.collectionId : undefined);
+
+  app.get("/api/collections", async (req) => {
+    const limit = Math.min(Number((req.query as { limit?: string }).limit) || 20, 50);
+    return listCollections(d.collectionsDir, limit, activeId());
+  });
+
+  app.get("/api/collections/:id", async (req, reply) => {
+    const c = await readCollection(d.collectionsDir, (req.params as { id: string }).id, activeId());
+    return c ?? reply.code(404).send({ error: "collection not found" });
+  });
+
+  app.get("/api/collections/:id/images/:file", async (req, reply) => {
+    const { id, file } = req.params as { id: string; file: string };
+    const p = safeImagePath(d.collectionsDir, id, file);
+    if (!p) return reply.code(404).send({ error: "not found" });
+    try {
+      await stat(p);
+    } catch {
+      return reply.code(404).send({ error: "not found" });
+    }
+    reply.type("image/png").header("cache-control", "private, max-age=3600");
+    if ((req.query as { download?: string }).download) {
+      reply.header("content-disposition", `attachment; filename="${basename(id)}-${file}"`);
+    }
+    return reply.send(createReadStream(p));
+  });
+
+  if (d.webDist) void app.register(fastifyStatic, { root: resolve(d.webDist) });
+  return app;
+}
