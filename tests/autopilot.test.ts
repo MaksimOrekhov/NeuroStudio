@@ -6,11 +6,11 @@ import { join, resolve } from "node:path";
 import { ComfyUnavailableError, MODELS, loadWorkflow } from "../src/comfy.ts";
 import { buildJobs, runCollection } from "../src/collection.ts";
 import { CodexError, generatePlan } from "../src/codex.ts";
-import { validatePlan } from "../src/promptPlan.ts";
+import { strictPlan } from "./fixtures/strictPlan.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const load = async () => ({
-  plan: validatePlan(JSON.parse(await readFile(join(root, "docs/examples/prompt-plan.sample.json"), "utf8"))),
+  plan: strictPlan("Autopilot Test"),
   base: await loadWorkflow(join(root, "workflows/anima-crimson-oath.api.json")),
 });
 
