@@ -20,6 +20,13 @@ export interface Collection {
   frames: Frame[];
   variations: number;
   selections: Record<string, number>;
+  export: ExportStatus;
+}
+
+export interface ExportStatus {
+  ready: boolean;
+  resolved: number;
+  message?: string;
 }
 
 export interface RunState {
@@ -60,8 +67,9 @@ export const startRun = (theme: string, collections: number, variations: number)
 export const imageUrl = (id: string, file: string, download = false) =>
   `/api/collections/${encodeURIComponent(id)}/images/${file}${download ? "?download=1" : ""}`;
 export const selectBest = (id: string, frame: number, variant: number | null) =>
-  json<Record<string, number>>(`/api/collections/${encodeURIComponent(id)}/selection`, {
+  json<{ selections: Record<string, number>; export: ExportStatus }>(`/api/collections/${encodeURIComponent(id)}/selection`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ frame, variant }),
   });
+export const exportUrl = (id: string) => `/api/collections/${encodeURIComponent(id)}/export`;

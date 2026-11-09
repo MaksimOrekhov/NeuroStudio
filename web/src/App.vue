@@ -16,8 +16,9 @@ const serverDown = ref(false);
 const lightbox = ref<{ id: string; frame: number; variant: number } | null>(null);
 const lightboxCollection = computed(() => collections.value.find((c) => c.id === lightbox.value?.id));
 
-function onSelections(c: Collection, sel: Record<string, number>) {
-  c.selections = sel;
+function onSelections(c: Collection, r: { selections: Record<string, number>; export: Collection["export"] }) {
+  c.selections = r.selections;
+  c.export = r.export;
 }
 let timer: number | undefined;
 

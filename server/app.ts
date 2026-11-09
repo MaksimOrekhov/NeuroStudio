@@ -5,6 +5,7 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { ComfyClient } from "../src/comfy.ts";
 import { SelectionError, listCollections, readCollection, safeImagePath, setSelection } from "./collections.ts";
+import { ExportError, planExport, zipStream } from "./export.ts";
 import { parseCount, parseVariations } from "../src/promptPlan.ts";
 import { RunError, type AutopilotRunner } from "./runner.ts";
 
@@ -74,10 +75,26 @@ export function buildApp(d: AppDeps) {
     return c ?? reply.code(404).send({ error: "collection not found" });
   });
 
+  app.get("/api/collections/:id/export", async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    const c = await readCollection(d.collectionsDir, id, activeId());
+    if (!c) return reply.code(404).send({ error: "collection not found" });
+    try {
+      const files = await planExport(d.collectionsDir, c);
+      reply.type("application/zip").header("content-disposition", `attachment; filename="${basename(id)}-selected.zip"`);
+      return reply.send(zipStream(files));
+    } catch (e) {
+      if (e instanceof ExportError) return reply.code(e.httpStatus).send({ error: e.message });
+      throw e;
+    }
+  });
+
   app.put("/api/collections/:id/selection", async (req, reply) => {
     const { frame, variant } = (req.body ?? {}) as { frame?: unknown; variant?: unknown };
     try {
-      return await setSelection(d.collectionsDir, (req.params as { id: string }).id, frame, variant);
+      const id = (req.params as { id: string }).id;
+      const selections = await setSelection(d.collectionsDir, id, frame, variant);
+      return { selections, export: (await readCollection(d.collectionsDir, id, activeId()))?.export };
     } catch (e) {
       if (e instanceof SelectionError) return reply.code(e.message === "collection not found" ? 404 : 400).send({ error: e.message });
       throw e;

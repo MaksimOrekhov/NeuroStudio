@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, reactive } from "vue";
-import { imageUrl, selectBest, type Collection, type Frame } from "./api";
+import { exportUrl, imageUrl, selectBest, type Collection, type ExportStatus, type Frame } from "./api";
 
 const props = defineProps<{ collection: Collection }>();
-const emit = defineEmits<{ open: [frame: number, variant: number]; changed: [selections: Record<string, number>] }>();
+const emit = defineEmits<{ open: [frame: number, variant: number]; changed: [result: { selections: Record<string, number>; export: ExportStatus }] }>();
 
 const MODEL_LABEL: Record<string, string> = { "crimson-oath": "Crimson Oath", duskrose: "Duskrose" };
 
@@ -93,6 +93,13 @@ const unknown = computed(() => props.collection.frames.filter((f) => f.status ==
       </figure>
     </div>
 
+    <div class="export">
+      <a v-if="collection.export.ready" class="dl" :href="exportUrl(collection.id)" download>Download Selected (ZIP)</a>
+      <button v-else class="dl off" disabled :title="collection.export.message">Download Selected (ZIP)</button>
+      <span v-if="!collection.export.ready" class="why">{{ collection.export.message }}</span>
+      <span v-else class="why">4 scenes · original PNG files</span>
+    </div>
+
     <p v-if="saveError.text" class="warnline bad">Could not save selection: {{ saveError.text }}</p>
     <p v-if="collection.status !== 'running' && unknown.length" class="warnline">
       Frame state is unknown (run interrupted or ComfyUI went away). Not re-submitted automatically. Check ComfyUI history for
@@ -135,6 +142,10 @@ figcaption a { margin-left: auto; color: var(--accent-2); text-decoration: none;
 .sel { width: 100%; margin-top: 6px; padding: 6px; font-size: 13px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
 .sel:hover { border-color: var(--accent); }
 .sel.on { background: #10291f; color: var(--ok); border-color: var(--ok); }
+.export { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+.dl { padding: 9px 16px; border-radius: 10px; border: 0; font-size: 14px; font-weight: 600; color: #fff; background: linear-gradient(135deg, var(--accent), #5b8cff); text-decoration: none; cursor: pointer; }
+.dl.off { background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); cursor: not-allowed; font-weight: 500; }
+.why { font-size: 13px; color: var(--muted); }
 .warnline { font-size: 13px; color: var(--warn); margin: 12px 0 0; word-break: break-all; }
 .warnline.bad { color: var(--bad); }
 </style>

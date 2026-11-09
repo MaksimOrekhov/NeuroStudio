@@ -29,12 +29,57 @@ export interface CollectionView {
   variations: number;
   /** Selected best variant per frame number (from selections.json). */
   selections: Record<string, number>;
+  /** Whether the four final images can be exported as a ZIP (see export.ts). */
+  export: ExportStatus;
   codex?: Manifest["codex"];
   comfySeconds?: number;
 }
 
 const ID = /^[A-Za-z0-9._-]+$/;
 const IMAGE = /^scene-\d{2}(-v\d{2})?\.png$/;
+
+export interface ExportStatus {
+  ready: boolean;
+  /** Scenes (of 4) that have a final image: selected Best, or a single finished variant. */
+  resolved: number;
+  /** Human-readable reason when not ready. */
+  message?: string;
+}
+
+interface Choice {
+  frame: number;
+  image?: string;
+  problem?: string;
+}
+
+/**
+ * Picks the final image of each of the 4 scenes. Never substitutes another variant for a missing selected one.
+ */
+export function chooseScenes(c: CollectionView): Choice[] {
+  return [1, 2, 3, 4].map((frame) => {
+    const variants = c.frames.filter((f) => f.frame === frame);
+    const sel = c.selections[String(frame)];
+    if (sel !== undefined) {
+      const v = variants.find((f) => f.variant === sel);
+      return v?.image ? { frame, image: v.image } : { frame, problem: `scene ${frame}: the selected image (v${sel}) is not available` };
+    }
+    if (variants.length === 1) {
+      return variants[0].image ? { frame, image: variants[0].image } : { frame, problem: `scene ${frame}: no finished image` };
+    }
+    if (variants.length === 0) return { frame, problem: `scene ${frame}: no image` };
+    return { frame, problem: `scene ${frame}: select the best of ${variants.length} variants` };
+  });
+}
+
+export function exportStatus(c: CollectionView): ExportStatus {
+  const choices = chooseScenes(c);
+  const resolved = choices.filter((x) => x.image).length;
+  const problems = choices.filter((x) => x.problem).map((x) => x.problem!);
+  if (!problems.length) return { ready: true, resolved };
+  const unselected = choices.filter((x) => x.problem?.includes("select the best")).length;
+  const message = unselected === problems.length ? `Select best images: ${resolved}/4` : problems.join("; ");
+  return { ready: false, resolved, message };
+}
 
 async function readSelections(dir: string, id: string): Promise<Record<string, number>> {
   try {
@@ -69,7 +114,8 @@ export async function readCollection(dir: string, id: string, activeId?: string)
       }))
       .sort((a, b) => a.frame - b.frame || a.variant - b.variant);
     const status = m.status === "running" && id !== activeId ? "interrupted" : m.status;
-    return {
+    const selections = await readSelections(dir, id);
+    const view: CollectionView = {
       id,
       title: m.title,
       description: plan?.concept.description,
@@ -78,10 +124,13 @@ export async function readCollection(dir: string, id: string, activeId?: string)
       doneFrames: frames.filter((f) => f.status === "done").length,
       frames,
       variations: m.variations ?? 1,
-      selections: await readSelections(dir, id),
+      selections,
+      export: { ready: false, resolved: 0 },
       codex: m.codex,
       comfySeconds: m.comfySeconds,
     };
+    view.export = exportStatus(view);
+    return view;
   } catch {
     return null;
   }
