@@ -31,7 +31,7 @@
 
 - Схема: `schemas/prompt-plan.schema.json` (концепция, ровно 4 кадра, `model ∈ {crimson-oath, duskrose}`, summary/positive/negative).
 - Валидатор: `src/promptPlan.ts` (структура, 2+2 модели, уникальность промптов, запрещённые слова `brushing, camera, framing, twisted, parted lips, wide hips`). Схема не проверяет «21+» и «разные наряды/ракурсы» — это только в инструкции модели.
-- Скрипт: `npm run plan:codex` → `output/prompt-plans/plan-<время>.json` + сводка в консоль. Модель можно задать `CODEX_MODEL=...` (иначе берётся из конфига Codex).
+- Скрипт: (на момент NS-002) отдельный скрипт; с NS-003 вызов Codex живёт в `src/codex.ts` и запускается через `npm run autopilot -- --execute`. Модель можно задать `CODEX_MODEL=...` (иначе берётся из конфига Codex).
 - Реальный образец ответа Codex: `docs/examples/prompt-plan.sample.json` («The Saltglass Conservatory»: четыре разных наряда, причёски, ракурсы и сцены у одной героини, 2 кадра Crimson Oath и 2 Duskrose). Валидатор его принял.
 - Генерация изображений не запускалась.
 
