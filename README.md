@@ -17,3 +17,4 @@ NS-003: `npm run autopilot` — CLI, см. [docs/ns-003-autopilot.md](docs/ns-00
 NS-004: `npm start` — веб-интерфейс на http://127.0.0.1:8787, см. [docs/ns-004-web-mvp.md](docs/ns-004-web-mvp.md).
 NS-005: выбор 1–3 коллекций за один запуск, один вызов Codex на партию — [docs/ns-005-multi-collection.md](docs/ns-005-multi-collection.md).
 NS-006: 1/2/4 seed-варианта на сцену и выбор лучшего — [docs/ns-006-seed-variations.md](docs/ns-006-seed-variations.md).
+NS-007: скачивание выбранных 4 PNG в ZIP — [docs/ns-007-collection-export.md](docs/ns-007-collection-export.md).
