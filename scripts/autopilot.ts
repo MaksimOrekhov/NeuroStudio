@@ -30,7 +30,7 @@ async function main() {
   let plan;
   if (planFile || !execute) {
     const file = resolve(planFile ?? join(root, "docs/examples/prompt-plan.sample.json"));
-    plan = validatePlan(JSON.parse(await readFile(file, "utf8")));
+    plan = validatePlan(JSON.parse(await readFile(file, "utf8")), { legacy: true });
     console.log(`Plan loaded from ${file}`);
   } else {
     console.log("Asking Codex for a plan (1 request)...");

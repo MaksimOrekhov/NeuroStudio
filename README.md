@@ -19,3 +19,4 @@ NS-005: выбор 1–3 коллекций за один запуск, один
 NS-006: 1/2/4 seed-варианта на сцену и выбор лучшего — [docs/ns-006-seed-variations.md](docs/ns-006-seed-variations.md).
 NS-007: скачивание выбранных 4 PNG в ZIP — [docs/ns-007-collection-export.md](docs/ns-007-collection-export.md).
 NS-008: превью WebP в галерее (кеш в `output/thumbs`) — [docs/ns-008-gallery-thumbnails.md](docs/ns-008-gallery-thumbnails.md).
+NS-009: Creative Director v2 (`prompts/CREATIVE_DIRECTOR.md`) — [docs/ns-009-creative-director-evaluation.md](docs/ns-009-creative-director-evaluation.md).

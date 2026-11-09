@@ -7,8 +7,9 @@ import { buildApp } from "../server/app.ts";
 import { safeImagePath } from "../server/collections.ts";
 import { AutopilotRunner } from "../server/runner.ts";
 import { loadWorkflow } from "../src/comfy.ts";
-import { generateBatch, planPrompt, type BatchResult } from "../src/codex.ts";
-import { PlanError, parseCount, validateBatch, validatePlan } from "../src/promptPlan.ts";
+import { generateBatch, loadInstructions, planPrompt, type BatchResult } from "../src/codex.ts";
+import { strictPlan } from "./fixtures/strictPlan.ts";
+import { PlanError, parseCount, validateBatch } from "../src/promptPlan.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const PORT = 8787;
@@ -16,7 +17,7 @@ const H = { host: `127.0.0.1:${PORT}` };
 
 async function setup(over: { systemStats?: () => Promise<unknown>; plan?: () => Promise<BatchResult>; waitForImages?: () => Promise<unknown> } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "ns-srv-"));
-  const planJson = validatePlan(JSON.parse(await readFile(join(root, "docs/examples/prompt-plan.sample.json"), "utf8")));
+  const planJson = strictPlan("Server Test");
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
   const calls = { plan: 0, avoid: [] as string[][], submit: 0 };
@@ -121,7 +122,7 @@ test("concept history is passed to Codex and appears in the prompt", async () =>
   release();
   while (runner.active) await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(calls.avoid[0], ["Saltglass Conservatory"]);
-  assert.match(planPrompt(undefined, ["Saltglass Conservatory"]), /do NOT repeat[^\n]*"Saltglass Conservatory"/);
+  assert.match(planPrompt("INSTRUCTIONS", undefined, ["Saltglass Conservatory"]), /do NOT repeat[^\n]*"Saltglass Conservatory"/);
 });
 
 test("collection count is validated (1-3 integer)", async () => {
@@ -173,7 +174,7 @@ test("batch stops on first error: no retry, no next collection, finished results
 });
 
 test("validateBatch and generateBatch: exact count, distinct titles, single Codex process", async () => {
-  const sample = JSON.parse(await readFile(join(root, "docs/examples/prompt-plan.sample.json"), "utf8"));
+  const sample = strictPlan("Sample");
   const other = { ...sample, concept: { ...sample.concept, title: "Another" } };
   assert.equal(validateBatch({ collections: [sample, other] }, 2).length, 2);
   assert.throws(() => validateBatch({ collections: [sample] }, 2), PlanError);
@@ -184,17 +185,20 @@ test("validateBatch and generateBatch: exact count, distinct titles, single Code
     fs.appendFileSync(process.env.NS_COUNTER, "x");
     const s = JSON.parse(fs.readFileSync(process.argv[process.argv.indexOf("--output-schema") + 1], "utf8"));
     if (s.properties.collections.minItems !== 2 || s.properties.collections.maxItems !== 2) process.exit(3);
+    if ("negative" in s.properties.collections.items.properties.frames.items.properties) process.exit(4); // Codex is not asked for negatives
     const p = JSON.parse(fs.readFileSync(process.env.NS_SAMPLE, "utf8"));
     const q = { ...p, concept: { ...p.concept, title: "Second" } };
     fs.writeFileSync(process.argv[process.argv.indexOf("-o") + 1], JSON.stringify({ collections: [p, q] }));
     process.stdin.resume(); process.stdin.on("data", () => {});
   `;
   process.env.NS_COUNTER = counter;
-  process.env.NS_SAMPLE = join(root, "docs/examples/prompt-plan.sample.json");
+  const planFile = join(await mkdtemp(join(tmpdir(), "ns-plan-")), "plan.json");
+  await writeFile(planFile, JSON.stringify(strictPlan("Sample")));
+  process.env.NS_SAMPLE = planFile;
   const r = await generateBatch({ count: 2, launcher: { command: process.execPath, args: ["-e", script, "--"] }, timeoutMs: 10_000 });
   assert.equal(r.plans.length, 2);
   assert.equal((await readFile(counter, "utf8")).length, 1); // exactly one Codex process
-  assert.match(planPrompt(undefined, [], 2), /exactly 2 Prompt Plans/);
+  assert.match(planPrompt(await loadInstructions(), undefined, [], 2), /exactly 2 Prompt Plans/);
 });
 
 test("variations: validated 1/2/4, 3x4x2 = 24 jobs with ONE Codex call, progress in images", async () => {

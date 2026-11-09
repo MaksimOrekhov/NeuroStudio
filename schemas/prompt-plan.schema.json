@@ -1,16 +1,30 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["concept", "frames"],
+  "required": [
+    "concept",
+    "frames"
+  ],
   "properties": {
     "concept": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["title", "description", "heroine"],
+      "required": [
+        "title",
+        "description",
+        "heroine"
+      ],
       "properties": {
-        "title": { "type": "string" },
-        "description": { "type": "string" },
-        "heroine": { "type": "string", "description": "Fixed look of the single adult heroine (age 21+) shared by all frames" }
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "heroine": {
+          "type": "string",
+          "description": "Fixed profile of the single adult heroine: age, face, hair, eyes, distinctive traits, main outfit"
+        }
       }
     },
     "frames": {
@@ -20,13 +34,32 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["frame", "model", "summary", "positive", "negative"],
+        "required": [
+          "frame",
+          "model",
+          "summary",
+          "positive"
+        ],
         "properties": {
-          "frame": { "type": "integer", "minimum": 1, "maximum": 4 },
-          "model": { "type": "string", "enum": ["crimson-oath", "duskrose"] },
-          "summary": { "type": "string" },
-          "positive": { "type": "string" },
-          "negative": { "type": "string" }
+          "frame": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "crimson-oath",
+              "duskrose"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "description": "One-sentence shot brief: where she is, what she does, how it is seen"
+          },
+          "positive": {
+            "type": "string"
+          }
         }
       }
     }

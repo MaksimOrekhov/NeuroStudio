@@ -9,17 +9,22 @@ export class CodexError extends Error {}
 
 const SCHEMA = resolve(import.meta.dirname, "../schemas/prompt-plan.schema.json");
 
-const RULES = `- Exactly 4 frames, numbered 1-4, one single adult heroine (age 21+, state "adult woman, 25 years old" or similar in every positive prompt). Same heroine look in all frames of a collection (put her fixed look in concept.heroine and repeat it in each positive prompt).
-- Frames 1 and 3 use model "crimson-oath", frames 2 and 4 use "duskrose". Both are anime-lineage checkpoints driven by comma-separated tags: start positive with quality tags (realistic, masterpiece, best quality, ultra detailed, absurdres, sharp focus, refined semi-realistic rendering), then subject, outfit, hairstyle, pose, setting, lighting. Crimson Oath: warmer, painterly, dramatic. Duskrose: softer, moodier, twilight palettes.
-- One coherent concept with visual unity (palette, location family, mood), but each frame differs in outfit, hairstyle, pose and viewing-angle wording, and scene composition. No repeated scenes.
-- Beautiful, tasteful, non-explicit.
-- Never use these words or phrases anywhere: brushing, camera, framing, twisted, parted lips, wide hips.
-- negative: a concise tag list adapted per model (worst quality, low quality, blurry, bad anatomy, bad hands, extra fingers, signature, watermark, text, plus anything frame-specific).
-- summary: one short sentence describing the frame.
-Return only the JSON.`;
+export const INSTRUCTIONS_PATH = resolve(import.meta.dirname, "../prompts/CREATIVE_DIRECTOR.md");
 
-/** count = 1: a single Prompt Plan; count > 1: a Batch Plan {collections: PromptPlan[]} in the same call. */
-export function planPrompt(theme?: string, avoid: string[] = [], count = 1): string {
+/** Reads the Creative Director instructions. A missing file is an error: there is no silent fallback to older rules. */
+export async function loadInstructions(path = INSTRUCTIONS_PATH): Promise<string> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch {
+    throw new CodexError(`Creative Director instructions not found at ${path}. Restore prompts/CREATIVE_DIRECTOR.md.`);
+  }
+  if (!text.trim()) throw new CodexError(`Creative Director instructions at ${path} are empty.`);
+  return text.trim();
+}
+
+/** instructions + the request. count = 1: a single Prompt Plan; count > 1: a Batch Plan {collections: PromptPlan[]} in the same call. */
+export function planPrompt(instructions: string, theme?: string, avoid: string[] = [], count = 1): string {
   const batch = count > 1;
   const themeLine = theme
     ? `Theme requested by the user (use it as the starting point${batch ? " for all collections, but give each its own distinct angle" : ""}): ${JSON.stringify(theme)}`
@@ -28,21 +33,20 @@ export function planPrompt(theme?: string, avoid: string[] = [], count = 1): str
       : "No theme is given: invent ONE original concept yourself.";
   const avoidLine = avoid.length
     ? `
-Concepts already created (do NOT repeat or resemble them; propose a substantially different concept, setting, palette and mood): ${avoid.map((t) => JSON.stringify(t)).join(", ")}.`
+Collections already created (do NOT repeat or resemble them; propose a substantially different concept, setting, palette and mood): ${avoid.map((t) => JSON.stringify(t)).join(", ")}.`
     : "";
   const ask = batch
     ? `Return a Batch Plan: JSON {"collections": [...]} with exactly ${count} Prompt Plans matching the supplied schema.`
     : "Return a Prompt Plan as JSON matching the supplied schema.";
   const distinct = batch
     ? `
-The ${count} collections must be substantially different from each other: different title, setting, palette, mood, heroine appearance and wardrobe themes. Never repeat a concept inside the batch.`
+The ${count} collections must be substantially different from each other (concept, heroine, outfit, palette, setting, mood). Never repeat a concept inside the batch.`
     : "";
-  return `You are the creative director of NeuroDreams, a collection of semi-realistic portrait sets.
-${themeLine}
-${ask}${avoidLine}${distinct}
+  return `${instructions}
 
-${batch ? "Rules (apply to every collection):" : "Rules:"}
-${RULES}`;
+---
+Task: ${themeLine}
+${ask}${avoidLine}${distinct}`;
 }
 
 /** Finds how to launch Codex without a shell. On Windows the PATH shim is a .cmd file, so run its JS entry with node. */
@@ -85,7 +89,7 @@ export interface BatchOptions extends CodexOptions {
 }
 
 /** Exactly one Codex process. No retries: any failure throws CodexError. Returns the parsed final message. */
-async function runCodex(prompt: string, schema: object, timeoutMs: number, launcher = resolveCodex()) {
+export async function runCodex(prompt: string, schema: object, timeoutMs: number, launcher = resolveCodex()) {
   const { command, args } = launcher;
   const dir = await mkdtemp(join(tmpdir(), "neurostudio-codex-"));
   const outFile = join(dir, "last-message.json");
@@ -150,20 +154,26 @@ const timeout = (o: CodexOptions, count: number) => o.timeoutMs ?? Number(proces
 /** One Codex call, one collection. */
 export async function generatePlan(opts: CodexOptions = {}): Promise<CodexResult> {
   const schema = JSON.parse(await readFile(SCHEMA, "utf8"));
-  const r = await runCodex(planPrompt(opts.theme, opts.avoid), schema, timeout(opts, 1), opts.launcher);
+  const instructions = await loadInstructions();
+  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid), schema, timeout(opts, 1), opts.launcher);
   return { plan: validatePlan(r.json), raw: r.raw, ms: r.ms, tokens: r.tokens };
+}
+
+/** JSON schema for a Batch Plan of exactly `count` Prompt Plans (derived from schemas/prompt-plan.schema.json). */
+export async function batchSchema(count: number, planSchemaPath = SCHEMA): Promise<object> {
+  const plan = JSON.parse(await readFile(planSchemaPath, "utf8"));
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["collections"],
+    properties: { collections: { type: "array", minItems: count, maxItems: count, items: plan } },
+  };
 }
 
 /** One Codex call for the whole batch; all plans are validated before anything is returned. */
 export async function generateBatch(opts: BatchOptions): Promise<BatchResult> {
-  const plan = JSON.parse(await readFile(SCHEMA, "utf8"));
-  const schema = {
-    type: "object",
-    additionalProperties: false,
-    required: ["collections"],
-    properties: { collections: { type: "array", minItems: opts.count, maxItems: opts.count, items: plan } },
-  };
-  const r = await runCodex(planPrompt(opts.theme, opts.avoid, opts.count), schema, timeout(opts, opts.count), opts.launcher);
+  const instructions = await loadInstructions();
+  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count), await batchSchema(opts.count), timeout(opts, opts.count), opts.launcher);
   return { plans: validateBatch(r.json, opts.count), raw: r.raw, ms: r.ms, tokens: r.tokens };
 }
 

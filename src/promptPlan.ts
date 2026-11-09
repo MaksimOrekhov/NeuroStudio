@@ -3,7 +3,8 @@ export interface Frame {
   model: "crimson-oath" | "duskrose";
   summary: string;
   positive: string;
-  negative: string;
+  /** Present only in plans made before Creative Director v2; absent means "use the workflow's own negative". */
+  negative?: string;
 }
 export interface PromptPlan {
   concept: { title: string; description: string; heroine: string };
@@ -14,8 +15,24 @@ export const BANNED = ["brushing", "camera", "framing", "twisted", "parted lips"
 
 export class PlanError extends Error {}
 
-/** Validates structure and NeuroDreams hard rules. Throws PlanError listing all problems. */
-export function validatePlan(x: unknown): PromptPlan {
+export interface ValidateOptions {
+  /**
+   * Accept plans saved before Creative Director v2 (any 2+2 model order, no "huge breast" / adult-age wording rules).
+   * New Codex output is always validated strictly.
+   */
+  legacy?: boolean;
+}
+
+// Adult ages stated as "29 years old" or "25-35 years old"; every stated age must be >= 21.
+function ages(text: string): number[] {
+  return [...text.matchAll(/(\d{1,2})(?:\s*-\s*(\d{1,2}))?\s*years?[ -]old/gi)].flatMap((m) => [Number(m[1])].concat(m[2] ? [Number(m[2])] : []));
+}
+
+/**
+ * Validates structure and the hard NeuroDreams rules that can be checked reliably.
+ * Taste (beauty, originality, light, coherence) is deliberately not checked here.
+ */
+export function validatePlan(x: unknown, opts: ValidateOptions = {}): PromptPlan {
   const errs: string[] = [];
   const p = x as PromptPlan;
   const str = (v: unknown) => typeof v === "string" && v.trim().length > 0;
@@ -29,12 +46,24 @@ export function validatePlan(x: unknown): PromptPlan {
     p.frames.forEach((f, i) => {
       if (f.frame !== i + 1) errs.push(`frames[${i}].frame must be ${i + 1}`);
       if (f.model !== "crimson-oath" && f.model !== "duskrose") errs.push(`frames[${i}].model invalid`);
-      for (const k of ["summary", "positive", "negative"] as const) if (!str(f[k])) errs.push(`frames[${i}].${k} missing`);
-      const text = `${f.positive} ${f.negative}`.toLowerCase();
+      for (const k of ["summary", "positive"] as const) if (!str(f[k])) errs.push(`frames[${i}].${k} missing`);
+      if (f.negative !== undefined && typeof f.negative !== "string") errs.push(`frames[${i}].negative must be a string`);
+      const text = `${f.positive} ${f.negative ?? ""}`.toLowerCase();
       for (const w of BANNED) if (text.includes(w)) errs.push(`frames[${i}] contains banned phrase "${w}"`);
+      if (!opts.legacy && str(f.positive)) {
+        const pos = f.positive;
+        if (!/adult woman/i.test(pos)) errs.push(`frames[${i}] must say "adult woman"`);
+        const a = ages(pos);
+        if (!a.length || a.some((n) => n < 21)) errs.push(`frames[${i}] must state a concrete adult age (21+) like "29 years old"`);
+        const hb = (pos.match(/\bhuge breast\b/gi) ?? []).length;
+        if (hb !== 1 || /huge breasts/i.test(pos)) errs.push(`frames[${i}] must contain the exact phrase "huge breast" exactly once (found ${hb})`);
+      }
     });
     for (const m of ["crimson-oath", "duskrose"]) {
       if (p.frames.filter((f) => f.model === m).length !== 2) errs.push(`expected exactly 2 frames for ${m}`);
+    }
+    if (!opts.legacy && !(p.frames[0]?.model === "crimson-oath" && p.frames[1]?.model === "crimson-oath" && p.frames[2]?.model === "duskrose" && p.frames[3]?.model === "duskrose")) {
+      errs.push("frames 1-2 must use crimson-oath and frames 3-4 duskrose");
     }
     if (new Set(p.frames.map((f) => f.positive)).size !== 4) errs.push("frame prompts must be distinct");
   }
@@ -60,14 +89,14 @@ export function parseCount(x: unknown): number {
 }
 
 /** Batch Plan = { collections: PromptPlan[] }. Exactly `count` valid plans with distinct titles. */
-export function validateBatch(x: unknown, count: number): PromptPlan[] {
+export function validateBatch(x: unknown, count: number, opts: ValidateOptions = {}): PromptPlan[] {
   const list = (x as { collections?: unknown })?.collections;
   if (!Array.isArray(list) || list.length !== count) {
     throw new PlanError(`Batch plan must contain exactly ${count} collections, got ${Array.isArray(list) ? list.length : "none"}`);
   }
   const plans = list.map((p, i) => {
     try {
-      return validatePlan(p);
+      return validatePlan(p, opts);
     } catch (e) {
       throw new PlanError(`Collection ${i + 1}: ${(e as Error).message}`);
     }
