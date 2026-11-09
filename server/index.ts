@@ -7,7 +7,7 @@ import { AutopilotRunner } from "./runner.ts";
 const root = resolve(import.meta.dirname, "..");
 const port = Number(process.env.PORT ?? 8787);
 const comfyUrl = process.env.COMFY_URL ?? "http://127.0.0.1:8188";
-const collectionsDir = join(root, "output/collections");
+const collectionsDir = process.env.COLLECTIONS_DIR ?? join(root, "output/collections");
 
 const runner = new AutopilotRunner({
   client: new ComfyClient(comfyUrl),

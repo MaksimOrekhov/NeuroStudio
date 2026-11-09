@@ -8,10 +8,17 @@ const status = ref<ApiStatus | null>(null);
 const collections = ref<Collection[]>([]);
 const theme = ref("");
 const count = ref(3);
+const variations = ref(2);
+const totalImages = computed(() => count.value * 4 * variations.value);
 const starting = ref(false);
 const error = ref("");
 const serverDown = ref(false);
-const lightbox = ref<{ c: Collection; frame: number } | null>(null);
+const lightbox = ref<{ id: string; frame: number; variant: number } | null>(null);
+const lightboxCollection = computed(() => collections.value.find((c) => c.id === lightbox.value?.id));
+
+function onSelections(c: Collection, sel: Record<string, number>) {
+  c.selections = sel;
+}
 let timer: number | undefined;
 
 const run = computed(() => status.value?.run);
@@ -56,7 +63,7 @@ async function start() {
   error.value = "";
   starting.value = true;
   try {
-    const s = await startRun(theme.value, count.value);
+    const s = await startRun(theme.value, count.value, variations.value);
     if (status.value) status.value.run = s;
   } catch (e) {
     error.value = (e as Error).message;
@@ -97,9 +104,15 @@ onBeforeUnmount(() => clearTimeout(timer));
       <input id="theme" v-model="theme" :disabled="active" maxlength="200" placeholder="Leave empty — AI invents the concept" @keyup.enter="canStart && start()" />
       <div class="seg" role="group" aria-label="Number of collections">
         <button v-for="n in [1, 2, 3]" :key="n" :class="{ on: count === n }" :disabled="active" @click="count = n">
-          {{ n }} {{ n === 1 ? "collection" : "collections" }} <small>· {{ n * 4 }} images</small>
+          {{ n }} {{ n === 1 ? "collection" : "collections" }}
         </button>
       </div>
+      <div class="seg" role="group" aria-label="Seed variations per scene">
+        <button v-for="n in [1, 2, 4]" :key="n" :class="{ on: variations === n }" :disabled="active" @click="variations = n">
+          {{ n }} {{ n === 1 ? "variation" : "variations" }} <small v-if="n === 4">· extended</small>
+        </button>
+      </div>
+      <p class="total">{{ count }} {{ count === 1 ? "collection" : "collections" }} × 4 scenes × {{ variations }} {{ variations === 1 ? "variation" : "variations" }} = <b>{{ totalImages }} images</b></p>
       <button class="go" :disabled="!canStart" @click="start">
         {{ active ? "Generating…" : "Generate Collections" }}
       </button>
@@ -124,10 +137,16 @@ onBeforeUnmount(() => clearTimeout(timer));
     <section class="gallery">
       <h2>Collections</h2>
       <p v-if="!collections.length" class="muted">No collections yet. Press Generate Collections.</p>
-      <CollectionCard v-for="c in collections" :key="c.id" :collection="c" @open="(f) => (lightbox = { c, frame: f })" />
+      <CollectionCard
+        v-for="c in collections"
+        :key="c.id"
+        :collection="c"
+        @open="(f, v) => (lightbox = { id: c.id, frame: f, variant: v })"
+        @changed="(sel) => onSelections(c, sel)"
+      />
     </section>
 
-    <Lightbox v-if="lightbox" :collection="lightbox.c" :frame="lightbox.frame" @close="lightbox = null" />
+    <Lightbox v-if="lightbox && lightboxCollection" :collection="lightboxCollection" :frame="lightbox.frame" :variant="lightbox.variant" @close="lightbox = null" />
   </div>
 </template>
 
@@ -145,6 +164,8 @@ label { font-size: 13px; color: var(--muted); }
 label em { font-style: normal; opacity: 0.6; margin-left: 6px; }
 input { width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 12px 14px; outline: none; }
 input:focus { border-color: var(--accent); }
+.total { margin: 0; font-size: 14px; color: var(--muted); }
+.total b { color: var(--text); }
 .seg { display: flex; gap: 8px; flex-wrap: wrap; }
 .seg button { flex: 1; min-width: 150px; padding: 10px 12px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
 .seg button small { opacity: 0.7; }

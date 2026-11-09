@@ -3,14 +3,15 @@ import { join, resolve } from "node:path";
 import { ComfyClient, loadWorkflow } from "../src/comfy.ts";
 import { CodexError, generatePlan } from "../src/codex.ts";
 import { buildJobs, runCollection, slugify } from "../src/collection.ts";
-import { summarize, validatePlan } from "../src/promptPlan.ts";
+import { parseVariations, summarize, validatePlan } from "../src/promptPlan.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const USAGE = `Usage: npm run autopilot -- [--execute] [--theme "text"] [--plan file.json]
   (default)   Dry run: validate a saved plan (docs/examples/prompt-plan.sample.json), no Codex, no ComfyUI.
   --execute   Real run: Codex plan (unless --plan is given) -> ComfyUI -> 4 PNG in output/collections/.
   --theme     Optional theme hint for Codex.
-  --plan      Use this plan file instead of calling Codex.`;
+  --plan      Use this plan file instead of calling Codex.
+  --variations 1|2|4  Seed variants per scene (default 1).`;
 
 const argv = process.argv.slice(2);
 if (argv.includes("--help")) {
@@ -21,6 +22,7 @@ const execute = argv.includes("--execute");
 const opt = (name: string) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined);
 const planFile = opt("--plan");
 const theme = opt("--theme");
+const variations = parseVariations(opt("--variations") ? Number(opt("--variations")) : undefined);
 
 async function main() {
   const t0 = Date.now();
@@ -41,8 +43,8 @@ async function main() {
 
   const base = await loadWorkflow(join(root, "workflows/anima-crimson-oath.api.json"));
   const slug = slugify(plan.concept.title);
-  const jobs = buildJobs(plan, base, slug);
-  console.log("Queue: " + jobs.map((j) => `scene-${String(j.frame).padStart(2, "0")}:${j.model}`).join(" -> "));
+  const jobs = buildJobs(plan, base, slug, variations);
+  console.log("Queue: " + jobs.map((j) => `${j.file}:${j.model}`).join(" -> "));
   if (!execute) {
     console.log("\nDry run OK (plan valid, 4 jobs built). Use --execute for a real run.");
     return;
