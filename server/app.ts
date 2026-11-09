@@ -7,6 +7,7 @@ import { ComfyClient } from "../src/comfy.ts";
 import { FeedbackError, SelectionError, listCollections, readCollection, safeImagePath, setFeedback, setSelection } from "./collections.ts";
 import { ExportError, planExport, zipStream } from "./export.ts";
 import { getThumbnail } from "./thumbs.ts";
+import { parseComposition } from "../src/composition.ts";
 import { parseCount, parseVariations } from "../src/promptPlan.ts";
 import { RunError, type AutopilotRunner } from "./runner.ts";
 
@@ -49,18 +50,20 @@ export function buildApp(d: AppDeps) {
   });
 
   app.post("/api/autopilot/start", async (req, reply) => {
-    const body = (req.body ?? {}) as { theme?: unknown; collections?: unknown; variations?: unknown };
+    const body = (req.body ?? {}) as { theme?: unknown; collections?: unknown; variations?: unknown; composition?: unknown };
     let count: number;
     let variations: number;
+    let composition: ReturnType<typeof parseComposition>;
     try {
       count = parseCount(body.collections);
       variations = parseVariations(body.variations);
+      composition = parseComposition(body.composition);
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
     const theme = typeof body.theme === "string" ? body.theme.trim().slice(0, 200) : "";
     try {
-      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations));
+      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations, composition));
     } catch (e) {
       if (e instanceof RunError) return reply.code(e.httpStatus).send({ error: e.message, code: e.code });
       throw e;

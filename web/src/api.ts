@@ -1,3 +1,5 @@
+import type { Composition } from "../../src/composition";
+
 export interface Frame {
   frame: number;
   variant: number;
@@ -67,11 +69,11 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const getStatus = () => json<ApiStatus>("/api/status");
 export const getCollections = (limit = 8) => json<Collection[]>(`/api/collections?limit=${limit}`);
-export const startRun = (theme: string, collections: number, variations: number) =>
+export const startRun = (theme: string, collections: number, variations: number, composition?: Composition) =>
   json<RunState>("/api/autopilot/start", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ theme, collections, variations }),
+    body: JSON.stringify({ theme, collections, variations, composition }),
   });
 export const imageUrl = (id: string, file: string, download = false) =>
   `/api/collections/${encodeURIComponent(id)}/images/${file}${download ? "?download=1" : ""}`;
