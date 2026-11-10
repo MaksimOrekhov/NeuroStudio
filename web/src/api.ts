@@ -1,10 +1,16 @@
 import type { Composition } from "../../src/composition";
+import type { ErrorCode } from "./errorCodes";
+import type { ImageModelAssignment } from "../../src/imageModels";
+
+// Types mirror server/collections.ts (CollectionView), server/runner.ts (RunState) and server/runs.ts (RunView).
 
 export interface Frame {
   frame: number;
   variant: number;
   model: string;
   summary?: string;
+  /** Russian shot brief (Plan v3); older collections only have `summary`. */
+  summaryRu?: string;
   status: string;
   seed: number;
   promptId?: string;
@@ -20,24 +26,38 @@ export interface Feedback {
   updatedAt: string;
 }
 
+export interface ExportStatus {
+  ready: boolean;
+  resolved: number;
+  message?: string;
+}
+
+export interface GenerationMeta {
+  theme: string | null;
+  imageModels: ImageModelAssignment;
+  /** Resolved composition per frame (after inheritance); {} = Auto. */
+  composition: Record<string, string>[] | null;
+}
+
 export interface Collection {
   id: string;
   title: string;
+  titleRu?: string;
   description?: string;
+  descriptionRu?: string;
   createdAt: string;
   status: "running" | "done" | "failed" | "interrupted";
   doneFrames: number;
   frames: Frame[];
   variations: number;
+  /** 1-4; the server answers 4 for collections created before NS-014. */
+  frameCount: number;
+  generation?: GenerationMeta;
   selections: Record<string, number>;
   feedback: Feedback | null;
   export: ExportStatus;
-}
-
-export interface ExportStatus {
-  ready: boolean;
-  resolved: number;
-  message?: string;
+  codex?: { seconds?: number; tokens?: unknown; model?: string | null; reasoningEffort?: string | null };
+  comfySeconds?: number;
 }
 
 export interface RunState {
@@ -49,10 +69,16 @@ export interface RunState {
   total: number;
   collection: number;
   collections: number;
+  frames: number;
   variations: number;
-  finished: string[];
+  imageModels?: ImageModelAssignment;
+  runId?: string;
   currentFrame?: number;
+  finished: string[];
   error?: string;
+  errorCode?: ErrorCode;
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 export interface ApiStatus {
@@ -60,37 +86,82 @@ export interface ApiStatus {
   run: RunState;
 }
 
+/** One record of GET /api/runs (output/batches/<id>/batch-plan.json). */
+export interface RunRecord {
+  id: string;
+  createdAt: string;
+  status: "running" | "completed" | "failed" | "interrupted";
+  theme: string | null;
+  collections: number;
+  frames: number;
+  variations: number;
+  totalImages: number;
+  imageModels: ImageModelAssignment | null;
+  collectionIds: string[];
+  error?: string;
+  errorCode?: ErrorCode;
+  codex?: { model?: string | null; reasoningEffort?: string | null; seconds?: number };
+}
+
+/** An API error: stable machine `code` (may be missing for network/HTTP problems) and the original technical message. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly code?: ErrorCode,
+    readonly httpStatus?: number,
+  ) {
+    super(message);
+  }
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, init);
+  let r: Response;
+  try {
+    r = await fetch(url, init);
+  } catch (e) {
+    throw new ApiError((e as Error).message || "network error"); // no code: the server could not be reached
+  }
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${r.status}`);
+  if (!r.ok) {
+    const b = body as { error?: string; code?: ErrorCode };
+    throw new ApiError(b.error ?? `HTTP ${r.status}`, b.code, r.status);
+  }
   return body as T;
 }
 
+const put = (body: unknown): RequestInit => ({ method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+/** The server never returns more than 50 collections per request. */
+export const COLLECTIONS_LIMIT = 50;
+export const RUNS_LIMIT = 50;
+
 export const getStatus = () => json<ApiStatus>("/api/status");
-export const getCollections = (limit = 8) => json<Collection[]>(`/api/collections?limit=${limit}`);
-export const startRun = (theme: string, collections: number, variations: number, composition?: Composition, codex: { codexModel?: string; codexReasoningEffort?: string } = {}) =>
-  json<RunState>("/api/autopilot/start", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ theme, collections, variations, composition, ...codex }),
-  });
-export const imageUrl = (id: string, file: string, download = false) =>
-  `/api/collections/${encodeURIComponent(id)}/images/${file}${download ? "?download=1" : ""}`;
-export const selectBest = (id: string, frame: number, variant: number | null) =>
-  json<{ selections: Record<string, number>; export: ExportStatus }>(`/api/collections/${encodeURIComponent(id)}/selection`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ frame, variant }),
-  });
+export const getCollections = (limit = COLLECTIONS_LIMIT) => json<Collection[]>(`/api/collections?limit=${limit}`);
+export const getCollection = (id: string) => json<Collection>(`/api/collections/${encodeURIComponent(id)}`);
+export const getRuns = (limit = RUNS_LIMIT) => json<RunRecord[]>(`/api/runs?limit=${limit}`);
+
+/** Body of POST /api/autopilot/start (NS-014 contract). */
+export interface StartRequest {
+  theme: string;
+  collections: number;
+  frames: number;
+  variations: number;
+  imageModels: { mode: "auto" } | { mode: "only"; model: string } | { mode: "custom"; perScene: string[] };
+  composition?: Composition;
+  codexModel?: string;
+  codexReasoningEffort?: string;
+}
+export const startRun = (req: StartRequest) =>
+  json<RunState>("/api/autopilot/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });
+
+export const imageUrl = (id: string, file: string, download = false) => `/api/collections/${encodeURIComponent(id)}/images/${file}${download ? "?download=1" : ""}`;
 export const thumbUrl = (id: string, file: string) => `/api/collections/${encodeURIComponent(id)}/thumbs/${file}`;
 export const exportUrl = (id: string) => `/api/collections/${encodeURIComponent(id)}/export`;
+
+export const selectBest = (id: string, frame: number, variant: number | null) =>
+  json<{ selections: Record<string, number>; export: ExportStatus }>(`/api/collections/${encodeURIComponent(id)}/selection`, put({ frame, variant }));
 export const saveFeedback = (id: string, fb: { rating: number | null; tags: string[]; note: string }) =>
-  json<{ feedback: Feedback | null }>(`/api/collections/${encodeURIComponent(id)}/feedback`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(fb),
-  });
+  json<{ feedback: Feedback | null }>(`/api/collections/${encodeURIComponent(id)}/feedback`, put(fb));
 
 export interface CodexModels {
   source: "cache" | "bundled" | "none";
