@@ -20,3 +20,4 @@ NS-006: 1/2/4 seed-варианта на сцену и выбор лучшего
 NS-007: скачивание выбранных 4 PNG в ZIP — [docs/ns-007-collection-export.md](docs/ns-007-collection-export.md).
 NS-008: превью WebP в галерее (кеш в `output/thumbs`) — [docs/ns-008-gallery-thumbnails.md](docs/ns-008-gallery-thumbnails.md).
 NS-009: Creative Director v2 (`prompts/CREATIVE_DIRECTOR.md`) — [docs/ns-009-creative-director-evaluation.md](docs/ns-009-creative-director-evaluation.md).
+NS-013: интерактивный UX-прототип нового интерфейса (русский, только десктоп 2560×1440 / 1920×1080) на mock-данных — `npm run dev:prototype` (http://127.0.0.1:5174), см. [docs/ns-013-ux-design.md](docs/ns-013-ux-design.md).

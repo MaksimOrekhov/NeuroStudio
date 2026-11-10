@@ -10,8 +10,11 @@
     "start": "vite build web && tsx server/index.ts",
     "dev:server": "tsx server/index.ts",
     "dev:web": "vite web",
+    "dev:prototype": "vite web/prototype",
+    "build:prototype": "vite build web/prototype",
+    "preview:prototype": "vite preview web/prototype",
     "test": "tsx --test tests/*.test.ts",
-    "typecheck": "tsc --noEmit && vue-tsc --noEmit -p web/tsconfig.json"
+    "typecheck": "tsc --noEmit && vue-tsc --noEmit -p web/tsconfig.json && vue-tsc --noEmit -p web/prototype/tsconfig.json"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
