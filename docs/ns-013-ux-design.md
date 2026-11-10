@@ -30,7 +30,33 @@ Sections 1–14 were written before NS-013A and name UI elements in English; the
 - Технические id не меняются: интерфейс показывает «Сидя на стуле», в запрос уходит `sitting_on_a_chair` (`OPTION_RU` — справочник подписей поверх каталога `src/composition.ts`; тест проверяет, что у каждого id есть подпись). Теги оценки хранятся с теми же id, что в NS-010.
 - Не переводятся названия продуктов и моделей: NeuroStudio, Codex, ComfyUI, Crimson Oath, Duskrose; технические термины seed, prompt_id, PNG, ZIP.
 - Промпты для генерации остаются на английском (это сказано и в интерфейсе, в блоке «Генерация промптов»).
-- Тексты, которые генерирует Codex (название и описание концепции, краткие описания кадров), в прототипе остаются английскими, как в реальных данных. Нужно ли получать их на русском — открытый вопрос (раздел 14).
+- Демонстрационные данные прототипа (названия и описания коллекций, краткие описания кадров) написаны по-русски; технические id и имена моделей не менялись. Решение по метаданным реальных коллекций — см. «Язык метаданных Codex» ниже.
+
+### Язык метаданных Codex (решение, для NS-014)
+
+- Codex создаёт **английские positive prompts** (как сейчас).
+- Для интерфейса Codex дополнительно создаёт `titleRu`, `descriptionRu` и `summaryRu` (по одному `summaryRu` на кадр).
+- Оригинальный `title` сохраняется для совместимости; `description` и краткие описания кадров — тоже.
+- Русские метаданные создаются **в том же единственном вызове Codex на партию**. Отдельных запросов на перевод нет.
+- Старые коллекции без русских полей показывают исходные тексты.
+- Реальная схема Prompt Plan в NS-013 не менялась; поля добавляются в NS-014 (аддитивно, необязательные при чтении старых планов).
+
+### Ошибки (решение, для NS-014 / NS-015)
+
+- Сервер возвращает **стабильные коды ошибок** (например `COMFY_UNREACHABLE`, `COMFY_OUT_OF_MEMORY`, `CODEX_FAILED`, `PLAN_INVALID`, `EXPORT_INCOMPLETE`) и параметры.
+- Пользовательское сообщение на русском формирует UI по коду.
+- Технические подробности (исходный текст ошибки, CUDA, узел ComfyUI, prompt_id) доступны по раскрывающейся ссылке «Технические подробности» и показываются как есть.
+- Существующий API в NS-013 не менялся.
+
+### Утверждённые решения NS-013 (финальное согласование)
+
+1. Архитектура «Создание / Библиотека / Запуски».
+2. Только десктоп: 2560 × 1440 и 1920 × 1080.
+3. Русский интерфейс без переключателя языка.
+4. Auto Mix, Custom Per Scene, Composition Controls и текущая структура Advanced Settings.
+5. Два набора коллекций по умолчанию.
+6. Без Retry/Resume.
+7. Во время генерации форму можно редактировать, но текущая генерация использует снимок настроек на момент старта.
 
 ### Утверждённая терминология
 
@@ -62,7 +88,7 @@ Sections 1–14 were written before NS-013A and name UI elements in English; the
 ### Рекомендации для NS-014 / NS-015
 
 1. Перенести `ru.ts` (подписи, `ruPlural`, `ofImages`, форматирование дат) в `web/src` как есть; новые строки сразу писать по-русски. Тест полноты `OPTION_RU` сохранить: новая опция в каталоге без русской подписи должна ронять тесты.
-2. Сообщения сервера, которые видит пользователь (`exportStatus.message`, ошибки валидации, `RunError`, «ComfyUI is not reachable…»), сейчас английские. Рекомендация: сервер отдаёт код и параметры, русский текст формирует UI; технические детали (CUDA, имена узлов ComfyUI) показываются как есть.
+2. Сообщения сервера, которые видит пользователь (`exportStatus.message`, ошибки валидации, `RunError`, «ComfyUI is not reachable…»), сейчас английские. Решение: сервер отдаёт стабильный код и параметры, русский текст формирует UI, технические детали доступны отдельно (см. «Ошибки» выше).
 3. Не добавлять мобильные брейкпоинты; каждую новую страницу проверять на 2560 × 1440 и 1920 × 1080. Скриншоты для приёмки — headless Chrome на этих размерах; в прототипе для этого есть пресеты в URL: `#create`, `#advanced`, `#custom`, `#library`, `#collection`, `#activity-generating`, `#activity-failed`.
 4. При переносе экранов в рабочее приложение сохранить ограничения ширины (2240 / 1880 px), колонки библиотеки и минимальную ширину селектов 260 px.
 5. Промпты, схема Prompt Plan и Creative Director остаются на английском; русификация касается только интерфейса.
@@ -188,7 +214,7 @@ Rules:
 
 - **Current run card**: status title (Planning the batch / Generating images / Run completed / Run stopped), start time and the formula, `done / total`, overall bar, and four steps: *ComfyUI check → Planning with Codex (one call for all collections) → Generating images (collection i of n · scene s · vK) → Saved to Library*.
 - **Per-collection rows**: title (or "Concept is being written…" while planning), bar, `6/8`, state (Waiting, Generating, Saved, Stopped · partial, Not started), *Open* in Library.
-- **Failure**: the error, what was saved (`1 complete collection, plus 1 of 8 images of "Greenhouse Rain"`), and explicitly: *Nothing is resumed or resubmitted automatically. Review what was saved in the Library and start a new run when ready.* On ComfyUI loss: an accepted image may still finish in ComfyUI — see its prompt_id on the collection. There is no Retry/Resume button on purpose.
+- **Failure**: the error, what was saved (`1 complete collection, plus 1 of 8 images of "Дождь в теплице"`), and explicitly: *Nothing is resumed or resubmitted automatically. Review what was saved in the Library and start a new run when ready.* On ComfyUI loss: an accepted image may still finish in ComfyUI — see its prompt_id on the collection. There is no Retry/Resume button on purpose.
 - **Side**: ComfyUI status (connected/version/queue, or what to do when unreachable) and the run's settings snapshot (theme, models per scene, Codex, composition per scene).
 - **Recent runs**: status, theme, formula, error line, links to the collections the run produced. (Source in NS-014: `output/batches/*/batch-plan.json`, which already exists.)
 
@@ -239,8 +265,11 @@ Rules:
 6. **Runner / collection**: `FRAMES` from the request; manifest gets `frames` and per-frame model (already per frame); old manifests default to 4.
 7. **Library backend**: `chooseScenes`/`exportStatus`/selections/`selectBest` use the manifest frame count; add `frameCount` + generation metadata (`theme`, codex, composition, models) to `CollectionView`; add `GET /api/runs` from `batch-plan.json`.
 8. **Composition**: `SCENES` → request frame count; `parseComposition` accepts ≤ frames.
-9. **UI**: replace `web/src` views with the prototype structure (Create / Library / Activity, header pill), wire to the API; keep `localStorage` only for UI preferences (Codex choice as today, maybe last frames/mode).
-10. Tests: plan validation for 1–4 frames × modes, runner totals, export/selection with 1–3 frames, legacy 4-frame collections unchanged.
+9. **Metadata language**: one Codex call per batch also returns `titleRu`, `descriptionRu`, and per-frame `summaryRu` next to the English `title`/`description`/prompts (prompts stay English; `title` kept for compatibility). The UI prefers the `*Ru` fields and falls back to the original text for older collections. No separate translation requests.
+9a. **Errors**: stable server error codes + Russian user messages in the UI + access to technical details (no change to the API in NS-013).
+9b. **Settings snapshot**: a run uses the settings captured at start; later edits to the form do not affect it.
+10. **UI**: replace `web/src` views with the prototype structure (Create / Library / Activity, header pill), wire to the API; keep `localStorage` only for UI preferences (Codex choice as today, maybe last frames/mode).
+11. Tests: plan validation for 1–4 frames × modes, runner totals, export/selection with 1–3 frames, legacy 4-frame collections unchanged.
 
 ## 13. Decisions that need approval
 
@@ -264,12 +293,13 @@ Rules:
 - **Composition requests** for scenes > frames from older clients must be rejected or trimmed consistently.
 - **Third model.** Needs a checkpoint, workflow compatibility (same UNET loader node?), and a decision on its Auto Mix position. Checkpoint discovery stays out of scope.
 - **Run history.** `batch-plan.json` has no per-collection status beyond ids; Activity history may need `batch.status` per collection (small additive change).
-- **Generated text language.** Concept titles, descriptions and shot briefs come from Codex in English. Showing them in Russian would need an extra Russian field in the Prompt Plan (prompts themselves stay English) — decide before NS-014.
-- **Server messages.** Export, validation and run errors are English strings from the server today; see the NS-014/015 recommendation in section 0.
+- **Generated text language.** Решено: Codex отдаёт `titleRu`/`descriptionRu`/`summaryRu` в том же вызове (см. раздел 0).
+- **Server messages.** Export, validation and run errors are English strings from the server today; решено: стабильные коды + русские сообщения + технические подробности (раздел 0).
 
 ## 15. Verification (NS-013 + NS-013A)
 
 - `npm run typecheck` (root + `web` + `web/prototype`), `npm test` (57 tests incl. `tests/ns013-prototype.test.ts`: Auto Mix, Only/Custom, third model, Russian summary text and plural forms, completeness of Russian composition labels, N-frame export), `npm run build`, `npm run build:prototype` — all pass.
+- NS-013 final: mock data in Russian; decisions on metadata language and errors recorded (docs only, no schema/API changes).
 - No changes under `src/`, `server/`, `schemas/`, `prompts/`, `workflows/`, `web/src/`. Codex and ComfyUI were not started.
 - Checked in the browser at 2560 × 1440 and 1920 × 1080: frames 1–4, all model modes, custom selects, Advanced open/close (also via a scene card), global + per-scene composition (inherit/own chips, copy, reset), Codex model/effort, Summary, demo run, simulated error and ComfyUI disconnect, review presets, Library filters/search, detail Select Best, viewer (←/→, B on any keyboard layout, Esc), feedback, ZIP enable/disable. A scan of every state found no untranslated UI text (only product and technical names).
 

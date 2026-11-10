@@ -131,7 +131,7 @@ export const run = reactive({
 
 export const running = computed(() => run.status === "planning" || run.status === "generating");
 
-const TITLES = ["Morning Ferry", "Orchard Ladder", "Blue Hour Laundry", "Salt Flat Picnic", "Library Ladder Noon", "Greenhouse Rain"];
+const TITLES = ["Утренний паром", "Лестница в саду", "Бельё в синий час", "Пикник на солончаке", "Полдень в библиотеке", "Дождь в теплице"];
 let timer: number | undefined;
 let titleOffset = 0;
 /** Demo presets fast-forward the simulation synchronously up to `stopAt` finished images. */
@@ -186,13 +186,13 @@ function beginCollection(i: number) {
   const c = makeCollection({
     id: `demo-${Date.now().toString(36)}-${i + 1}`,
     title: it.title,
-    description: "Demo collection from the simulated run (placeholder artwork).",
+    description: "Демо-коллекция из имитированного запуска (условные изображения).",
     daysAgo: 0,
     hue: (titleOffset * 47 + i * 83) % 360,
     frames: snap.frames,
     variations: snap.variations,
     models: snap.models,
-    summaries: Array.from({ length: snap.frames }, (_, k) => `Shot brief for scene ${k + 1} (demo).`),
+    summaries: Array.from({ length: snap.frames }, (_, k) => `Краткое описание кадра ${k + 1} (демо).`),
     status: "running",
     states: Array.from({ length: snap.frames * snap.variations }, () => "pending"),
     theme: snap.theme || null,
