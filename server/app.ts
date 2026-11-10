@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import Fastify from "fastify";
+import Fastify, { type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { ComfyClient } from "../src/comfy.ts";
 import { FeedbackError, SelectionError, listCollections, readCollection, safeImagePath, setFeedback, setSelection } from "./collections.ts";
@@ -9,12 +9,17 @@ import { ExportError, planExport, zipStream } from "./export.ts";
 import { getThumbnail } from "./thumbs.ts";
 import { parseComposition } from "../src/composition.ts";
 import { loadCatalog, resolveSelection, CodexSelectionError, effortLabel, type Catalog } from "../src/codexModels.ts";
-import { parseCount, parseVariations } from "../src/promptPlan.ts";
+import { parseCount, parseFrames, parseVariations } from "../src/promptPlan.ts";
+import { resolveImageModels } from "../src/imageModels.ts";
+import type { ErrorCode } from "../src/errors.ts";
+import { listRuns } from "./runs.ts";
 import { RunError, type AutopilotRunner } from "./runner.ts";
 
 export interface AppDeps {
   runner: AutopilotRunner;
   collectionsDir: string;
+  /** output/batches: source of GET /api/runs (default: ../batches next to the collections folder). */
+  batchesDir?: string;
   comfyUrl: string;
   port: number;
   webDist?: string;
@@ -30,6 +35,7 @@ export function buildApp(d: AppDeps) {
   const app = Fastify({ logger: false });
   const thumbsDir = d.thumbsDir ?? join(dirname(resolve(d.collectionsDir)), "thumbs");
   const catalog = d.loadCatalog ?? (() => loadCatalog());
+  const batchesDir = d.batchesDir ?? join(dirname(resolve(d.collectionsDir)), "batches");
   const status = d.statusClient ?? new ComfyClient(d.comfyUrl, fetch, 2000);
   const allowedHosts = new Set([`127.0.0.1:${d.port}`, `localhost:${d.port}`, "127.0.0.1:5173", "localhost:5173"]);
 
@@ -53,25 +59,33 @@ export function buildApp(d: AppDeps) {
     return { comfy, run: d.runner.state };
   });
 
+  /** Error body: `error` = technical message (unchanged), `code` = stable machine code (src/errors.ts). */
+  const fail = (reply: FastifyReply, status: number, code: ErrorCode, error: string) => reply.code(status).send({ error, code });
+
   app.post("/api/autopilot/start", async (req, reply) => {
-    const body = (req.body ?? {}) as { theme?: unknown; collections?: unknown; variations?: unknown; composition?: unknown; codexModel?: unknown; codexReasoningEffort?: unknown };
+    const body = (req.body ?? {}) as Record<string, unknown>;
     let count: number;
+    let frames: number;
     let variations: number;
+    let images: ReturnType<typeof resolveImageModels>;
     let composition: ReturnType<typeof parseComposition>;
     let codex: ReturnType<typeof resolveSelection>;
+    // Everything is validated here, before ComfyUI is contacted and before Codex is started.
     try {
       count = parseCount(body.collections);
+      frames = parseFrames(body.frames);
       variations = parseVariations(body.variations);
-      composition = parseComposition(body.composition);
+      images = resolveImageModels(body.imageModels, frames);
+      composition = parseComposition(body.composition, frames);
       codex = body.codexModel == null && body.codexReasoningEffort == null ? {} : resolveSelection(await catalog(), body.codexModel, body.codexReasoningEffort); // old calls never touch the catalog
     } catch (e) {
-      return reply.code(400).send({ error: (e as Error).message });
+      return fail(reply, 400, "INVALID_GENERATION_SETTINGS", (e as Error).message);
     }
     const theme = typeof body.theme === "string" ? body.theme.trim().slice(0, 200) : "";
     try {
-      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations, composition, codex));
+      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations, composition, codex, images));
     } catch (e) {
-      if (e instanceof RunError) return reply.code(e.httpStatus).send({ error: e.message, code: e.code });
+      if (e instanceof RunError) return fail(reply, e.httpStatus, e.code, e.message);
       throw e;
     }
   });
@@ -79,6 +93,11 @@ export function buildApp(d: AppDeps) {
   app.get("/api/codex/models", async () => {
     const c = await catalog();
     return { source: c.source, error: c.error, models: c.models.map((m) => ({ ...m, efforts: m.efforts.map((id) => ({ id, label: effortLabel(id) })) })) };
+  });
+
+  app.get("/api/runs", async (req) => {
+    const limit = Math.min(Number((req.query as { limit?: string }).limit) || 20, 50);
+    return listRuns(batchesDir, limit, d.runner.active ? d.runner.state.runId : undefined);
   });
 
   const activeId = () => (d.runner.active ? d.runner.state.collectionId : undefined);
@@ -90,19 +109,19 @@ export function buildApp(d: AppDeps) {
 
   app.get("/api/collections/:id", async (req, reply) => {
     const c = await readCollection(d.collectionsDir, (req.params as { id: string }).id, activeId());
-    return c ?? reply.code(404).send({ error: "collection not found" });
+    return c ?? fail(reply, 404, "COLLECTION_NOT_FOUND", "collection not found");
   });
 
   app.get("/api/collections/:id/export", async (req, reply) => {
     const id = (req.params as { id: string }).id;
     const c = await readCollection(d.collectionsDir, id, activeId());
-    if (!c) return reply.code(404).send({ error: "collection not found" });
+    if (!c) return fail(reply, 404, "COLLECTION_NOT_FOUND", "collection not found");
     try {
       const files = await planExport(d.collectionsDir, c);
       reply.type("application/zip").header("content-disposition", `attachment; filename="${basename(id)}-selected.zip"`);
       return reply.send(zipStream(files));
     } catch (e) {
-      if (e instanceof ExportError) return reply.code(e.httpStatus).send({ error: e.message });
+      if (e instanceof ExportError) return fail(reply, e.httpStatus, e.code, e.message);
       throw e;
     }
   });
@@ -114,7 +133,7 @@ export function buildApp(d: AppDeps) {
       const selections = await setSelection(d.collectionsDir, id, frame, variant);
       return { selections, export: (await readCollection(d.collectionsDir, id, activeId()))?.export };
     } catch (e) {
-      if (e instanceof SelectionError) return reply.code(e.message === "collection not found" ? 404 : 400).send({ error: e.message });
+      if (e instanceof SelectionError) return e.message === "collection not found" ? fail(reply, 404, "COLLECTION_NOT_FOUND", e.message) : fail(reply, 400, "INVALID_REQUEST", e.message);
       throw e;
     }
   });
@@ -123,7 +142,7 @@ export function buildApp(d: AppDeps) {
     try {
       return { feedback: await setFeedback(d.collectionsDir, (req.params as { id: string }).id, req.body ?? {}) };
     } catch (e) {
-      if (e instanceof FeedbackError) return reply.code(e.message === "collection not found" ? 404 : 400).send({ error: e.message });
+      if (e instanceof FeedbackError) return e.message === "collection not found" ? fail(reply, 404, "COLLECTION_NOT_FOUND", e.message) : fail(reply, 400, "INVALID_REQUEST", e.message);
       throw e;
     }
   });

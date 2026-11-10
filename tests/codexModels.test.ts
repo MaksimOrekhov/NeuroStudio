@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execArgs, generateBatch } from "../src/codex.ts";
 import { CodexSelectionError, effortLabel, loadCatalog, parseCatalog, resolveSelection, type Catalog } from "../src/codexModels.ts";
-import { strictPlan } from "./fixtures/strictPlan.ts";
+import { planV3 } from "./fixtures/strictPlan.ts";
 
 const raw = {
   models: [
@@ -74,7 +74,7 @@ test("mock CLI receives the selection once per batch (no retry); without selecti
   const dir = await mkdtemp(join(tmpdir(), "ns-mockcli-"));
   const log = join(dir, "args.log");
   const planFile = join(dir, "plan.json");
-  await writeFile(planFile, JSON.stringify(strictPlan("Mock")));
+  await writeFile(planFile, JSON.stringify(planV3("Mock")));
   const script = `
     const fs = require("fs");
     fs.appendFileSync(process.env.NS_LOG, JSON.stringify(process.argv) + "\\n");

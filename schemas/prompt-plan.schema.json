@@ -11,15 +11,27 @@
       "additionalProperties": false,
       "required": [
         "title",
+        "titleRu",
         "description",
+        "descriptionRu",
         "heroine"
       ],
       "properties": {
         "title": {
-          "type": "string"
+          "type": "string",
+          "description": "English title"
+        },
+        "titleRu": {
+          "type": "string",
+          "description": "Natural Russian title for the interface"
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "English one- or two-sentence description"
+        },
+        "descriptionRu": {
+          "type": "string",
+          "description": "Natural Russian description for the interface"
         },
         "heroine": {
           "type": "string",
@@ -29,7 +41,7 @@
     },
     "frames": {
       "type": "array",
-      "minItems": 4,
+      "minItems": 1,
       "maxItems": 4,
       "items": {
         "type": "object",
@@ -38,6 +50,7 @@
           "frame",
           "model",
           "summary",
+          "summaryRu",
           "positive"
         ],
         "properties": {
@@ -55,10 +68,15 @@
           },
           "summary": {
             "type": "string",
-            "description": "One-sentence shot brief: where she is, what she does, how it is seen"
+            "description": "English one-sentence shot brief: where she is, what she does, how it is seen"
+          },
+          "summaryRu": {
+            "type": "string",
+            "description": "The same shot brief in natural Russian for the interface"
           },
           "positive": {
-            "type": "string"
+            "type": "string",
+            "description": "English positive prompt"
           }
         }
       }

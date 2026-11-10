@@ -8,7 +8,7 @@ import { safeImagePath } from "../server/collections.ts";
 import { AutopilotRunner } from "../server/runner.ts";
 import { loadWorkflow } from "../src/comfy.ts";
 import { generateBatch, loadInstructions, planPrompt, type BatchOptions, type BatchResult } from "../src/codex.ts";
-import { strictPlan } from "./fixtures/strictPlan.ts";
+import { planV3, strictPlan } from "./fixtures/strictPlan.ts";
 import { PlanError, parseCount, validateBatch } from "../src/promptPlan.ts";
 
 const root = resolve(import.meta.dirname, "..");
@@ -40,7 +40,7 @@ async function setup(over: { systemStats?: () => Promise<unknown>; plan?: (o: Ba
       (async (o) => {
         calls.plan++;
         calls.avoid.push(o.avoid ?? []);
-        const plans = Array.from({ length: o.count }, (_, i) => ({ ...planJson, concept: { ...planJson.concept, title: `${planJson.concept.title} ${i + 1}` } }));
+        const plans = Array.from({ length: o.count }, (_, i) => planV3(`${planJson.concept.title} ${i + 1}`, o.models));
         return { plans, raw: "", ms: 5, tokens: null };
       }),
     baseGraph: await loadWorkflow(join(root, "workflows/anima-crimson-oath.api.json")),
@@ -174,7 +174,7 @@ test("batch stops on first error: no retry, no next collection, finished results
 });
 
 test("validateBatch and generateBatch: exact count, distinct titles, single Codex process", async () => {
-  const sample = strictPlan("Sample");
+  const sample = planV3("Sample");
   const other = { ...sample, concept: { ...sample.concept, title: "Another" } };
   assert.equal(validateBatch({ collections: [sample, other] }, 2).length, 2);
   assert.throws(() => validateBatch({ collections: [sample] }, 2), PlanError);
@@ -193,7 +193,7 @@ test("validateBatch and generateBatch: exact count, distinct titles, single Code
   `;
   process.env.NS_COUNTER = counter;
   const planFile = join(await mkdtemp(join(tmpdir(), "ns-plan-")), "plan.json");
-  await writeFile(planFile, JSON.stringify(strictPlan("Sample")));
+  await writeFile(planFile, JSON.stringify(planV3("Sample")));
   process.env.NS_SAMPLE = planFile;
   const r = await generateBatch({ count: 2, launcher: { command: process.execPath, args: ["-e", script, "--"] }, timeoutMs: 10_000 });
   assert.equal(r.plans.length, 2);

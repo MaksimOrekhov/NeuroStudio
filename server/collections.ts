@@ -1,6 +1,6 @@
 import { readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import type { Manifest } from "../src/collection.ts";
+import type { Generation, Manifest } from "../src/collection.ts";
 import type { PromptPlan } from "../src/promptPlan.ts";
 
 export interface FrameView {
@@ -9,6 +9,8 @@ export interface FrameView {
   variant: number;
   model: string;
   summary?: string;
+  /** Russian shot brief (plans made with Plan v3); absent in older collections: show `summary`. */
+  summaryRu?: string;
   status: string;
   seed: number;
   promptId?: string;
@@ -19,7 +21,10 @@ export interface FrameView {
 export interface CollectionView {
   id: string;
   title: string;
+  /** Russian title/description (Plan v3); absent in older collections: show `title`/`description`. */
+  titleRu?: string;
   description?: string;
+  descriptionRu?: string;
   createdAt: string;
   /** "running" on disk but not in this process => "interrupted" (never shown as completed) */
   status: "running" | "done" | "failed" | "interrupted";
@@ -27,11 +32,15 @@ export interface CollectionView {
   /** Every image slot: frame x variant. */
   frames: FrameView[];
   variations: number;
+  /** Frames in the collection: 1-4. Collections made before NS-014 have no such field and always had 4. */
+  frameCount: number;
+  /** Theme, image models per frame and final composition used for this collection; absent in older collections. */
+  generation?: Generation;
   /** Selected best variant per frame number (from selections.json). */
   selections: Record<string, number>;
   /** Subjective quality feedback for the whole collection (feedback.json); null when none was given. */
   feedback: Feedback | null;
-  /** Whether the four final images can be exported as a ZIP (see export.ts). */
+  /** Whether the final images (one per frame) can be exported as a ZIP (see export.ts). */
   export: ExportStatus;
   codex?: Manifest["codex"];
   comfySeconds?: number;
@@ -69,7 +78,7 @@ const IMAGE = /^scene-\d{2}(-v\d{2})?\.png$/;
 
 export interface ExportStatus {
   ready: boolean;
-  /** Scenes (of 4) that have a final image: selected Best, or a single finished variant. */
+  /** Scenes (of frameCount) that have a final image: selected Best, or a single finished variant. */
   resolved: number;
   /** Human-readable reason when not ready. */
   message?: string;
@@ -82,10 +91,10 @@ interface Choice {
 }
 
 /**
- * Picks the final image of each of the 4 scenes. Never substitutes another variant for a missing selected one.
+ * Picks the final image of each scene of the collection. Never substitutes another variant for a missing selected one.
  */
 export function chooseScenes(c: CollectionView): Choice[] {
-  return [1, 2, 3, 4].map((frame) => {
+  return Array.from({ length: c.frameCount }, (_, i) => i + 1).map((frame) => {
     const variants = c.frames.filter((f) => f.frame === frame);
     const sel = c.selections[String(frame)];
     if (sel !== undefined) {
@@ -106,7 +115,7 @@ export function exportStatus(c: CollectionView): ExportStatus {
   const problems = choices.filter((x) => x.problem).map((x) => x.problem!);
   if (!problems.length) return { ready: true, resolved };
   const unselected = choices.filter((x) => x.problem?.includes("select the best")).length;
-  const message = unselected === problems.length ? `Select best images: ${resolved}/4` : problems.join("; ");
+  const message = unselected === problems.length ? `Select best images: ${resolved}/${c.frameCount}` : problems.join("; ");
   return { ready: false, resolved, message };
 }
 
@@ -147,6 +156,7 @@ export async function readCollection(dir: string, id: string, activeId?: string)
         variant: f.variant ?? 1,
         model: f.model,
         summary: plan?.frames.find((p) => p.frame === f.frame)?.summary,
+        summaryRu: plan?.frames.find((p) => p.frame === f.frame)?.summaryRu,
         status: f.status,
         seed: f.seed,
         promptId: f.promptId,
@@ -159,12 +169,16 @@ export async function readCollection(dir: string, id: string, activeId?: string)
     const view: CollectionView = {
       id,
       title: m.title,
+      titleRu: plan?.concept.titleRu,
       description: plan?.concept.description,
+      descriptionRu: plan?.concept.descriptionRu,
       createdAt: m.createdAt,
       status,
       doneFrames: frames.filter((f) => f.status === "done").length,
       frames,
       variations: m.variations ?? 1,
+      frameCount: m.frameCount ?? 4,
+      generation: m.generation,
       selections,
       feedback: await readFeedback(dir, id),
       export: { ready: false, resolved: 0 },
@@ -209,7 +223,7 @@ export class SelectionError extends Error {}
 export async function setSelection(dir: string, id: string, frame: unknown, variant: unknown): Promise<Record<string, number>> {
   const c = await readCollection(dir, id);
   if (!c) throw new SelectionError("collection not found");
-  if (typeof frame !== "number" || !Number.isInteger(frame) || frame < 1 || frame > 4) throw new SelectionError("frame must be 1-4");
+  if (typeof frame !== "number" || !Number.isInteger(frame) || frame < 1 || frame > c.frameCount) throw new SelectionError(`frame must be 1-${c.frameCount}`);
   const sel = { ...c.selections };
   if (variant === null) {
     delete sel[String(frame)];
