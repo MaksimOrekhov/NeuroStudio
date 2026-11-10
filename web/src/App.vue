@@ -1,198 +1,110 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { getCollections, getStatus, startRun, type ApiStatus, type Collection } from "./api";
-import CollectionCard from "./CollectionCard.vue";
-import CodexSettings from "./CodexSettings.vue";
-import CompositionControls from "./CompositionControls.vue";
-import Lightbox from "./Lightbox.vue";
+import { computed, onBeforeUnmount, onMounted } from "vue";
+import ActivityView from "./components/ActivityView.vue";
+import CreateView from "./components/CreateView.vue";
+import LibraryView from "./components/LibraryView.vue";
+import { W, nPlural } from "./ru";
+import { app, comfyOk, go, pendingSelection, run, running, startPolling, stopPolling, ui, type View } from "./store";
 
-const status = ref<ApiStatus | null>(null);
-const collections = ref<Collection[]>([]);
-const theme = ref("");
-const count = ref(3);
-const variations = ref(2);
-const totalImages = computed(() => count.value * 4 * variations.value);
-const composition = ref<InstanceType<typeof CompositionControls> | null>(null);
-const codexSettings = ref<InstanceType<typeof CodexSettings> | null>(null);
-const starting = ref(false);
-const error = ref("");
-const serverDown = ref(false);
-const lightbox = ref<{ id: string; frame: number; variant: number } | null>(null);
-const lightboxCollection = computed(() => collections.value.find((c) => c.id === lightbox.value?.id));
-
-function onSelections(c: Collection, r: { selections: Record<string, number>; export: Collection["export"] }) {
-  c.selections = r.selections;
-  c.export = r.export;
-}
-function onFeedback(c: Collection, fb: Collection["feedback"]) {
-  c.feedback = fb;
-}
-let timer: number | undefined;
-
-const run = computed(() => status.value?.run);
-const active = computed(() => run.value?.status === "planning" || run.value?.status === "generating");
-const comfyOk = computed(() => status.value?.comfy.ok === true);
-const canStart = computed(() => !starting.value && !active.value && comfyOk.value && !serverDown.value);
-const percent = computed(() => (run.value ? (run.value.done / run.value.total) * 100 : 0));
-
-const phase = computed(() => {
-  const r = run.value;
-  if (!r) return "";
-  const multi = r.collections > 1;
-  if (r.status === "planning") return multi ? `Creating ${r.collections} concepts and prompts with Codex…` : "Creating concept and prompts with Codex…";
-  if (r.status === "generating") {
-    const head = multi ? `Generating collection ${r.collection} / ${r.collections}` : "Generating images";
-    return r.currentFrame ? `${head} — scene ${r.currentFrame}` : head;
-  }
-  if (r.status === "completed") return multi ? `${r.collections} collections completed` : "Collection completed";
+const tabs: { id: View; label: string }[] = [
+  { id: "create", label: "Создание" },
+  { id: "library", label: "Библиотека" },
+  { id: "activity", label: "Запуски" },
+];
+const state = computed(() => run.value?.status ?? "idle");
+const pct = computed(() => (run.value?.total ? Math.round((run.value.done / run.value.total) * 100) : 0));
+const runLabel = computed(() => {
+  if (state.value === "planning") return "Codex составляет план";
+  if (state.value === "generating") return `Генерация ${run.value?.done}/${run.value?.total}`;
+  if (state.value === "completed") return "Генерация завершена";
+  if (state.value === "failed") return "Генерация остановлена";
   return "";
 });
+const comfyText = computed(() => (app.connection === "connecting" ? "проверка…" : comfyOk.value ? "подключён" : "недоступен"));
+const comfyTitle = computed(() => (comfyOk.value ? `ComfyUI подключён · v${app.status?.comfy.version}` : (app.status?.comfy.error ?? "ComfyUI недоступен")));
 
-const hint = computed(() => {
-  if (serverDown.value) return "NeuroStudio server is not responding.";
-  if (!comfyOk.value) return "ComfyUI is not reachable. Start ComfyUI first — generation is disabled.";
-  return "";
-});
-
-async function refresh() {
-  try {
-    const prev = run.value?.status;
-    status.value = await getStatus();
-    serverDown.value = false;
-    const cur = status.value.run.status;
-    if (active.value || prev !== cur) collections.value = await getCollections();
-  } catch {
-    serverDown.value = true;
-  }
-  timer = window.setTimeout(refresh, active.value ? 1500 : 5000);
-}
-
-async function start() {
-  error.value = "";
-  starting.value = true;
-  try {
-    const s = await startRun(theme.value, count.value, variations.value, composition.value?.value, codexSettings.value?.value);
-    if (status.value) status.value.run = s;
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    starting.value = false;
-  }
-}
-
-onMounted(async () => {
-  try {
-    collections.value = await getCollections();
-  } catch {
-    /* handled by refresh */
-  }
-  refresh();
-});
-onBeforeUnmount(() => clearTimeout(timer));
+onMounted(startPolling);
+onBeforeUnmount(stopPolling);
 </script>
 
 <template>
-  <div class="page">
-    <header>
-      <h1>Neuro<span>Studio</span></h1>
-      <div class="comfy" :class="{ ok: comfyOk }" :title="status?.comfy.error">
-        <i /> ComfyUI
-        <template v-if="comfyOk">
-          connected · v{{ status?.comfy.version }}
-          <small v-if="(status?.comfy.queueRunning ?? 0) + (status?.comfy.queuePending ?? 0) > 0">
-            · queue {{ (status?.comfy.queueRunning ?? 0) + (status?.comfy.queuePending ?? 0) }}
-          </small>
-        </template>
-        <template v-else>unreachable</template>
+  <div class="shell">
+    <header class="top">
+      <div class="brand"><b>Neuro<span>Studio</span></b></div>
+
+      <nav class="tabs" aria-label="Разделы">
+        <button v-for="t in tabs" :key="t.id" :class="{ on: ui.view === t.id }" :aria-current="ui.view === t.id ? 'page' : undefined" @click="go(t.id)">
+          {{ t.label }}
+          <span v-if="t.id === 'library' && pendingSelection" class="count" :title="`Требуется выбор лучших: ${nPlural(pendingSelection, W.collection)}`">{{ pendingSelection }}</span>
+          <span v-if="t.id === 'activity' && running" class="live" aria-label="идёт генерация" />
+          <span v-if="t.id === 'activity' && state === 'failed'" class="live bad" aria-label="последняя генерация остановлена" />
+        </button>
+      </nav>
+
+      <div class="right">
+        <button v-if="state !== 'idle'" class="runpill" :class="state" title="Открыть «Запуски»" @click="go('activity')">
+          <span v-if="running" class="spinner" />
+          <span v-else class="dot" />
+          <span class="rl">{{ runLabel }}</span>
+          <span v-if="state === 'generating'" class="mini"><span :style="{ width: pct + '%' }" /></span>
+        </button>
+        <div class="comfy" :class="{ down: app.connection !== 'connecting' && !comfyOk }" :title="comfyTitle">
+          <span class="dot" />
+          ComfyUI <span class="cs">{{ comfyText }}</span>
+        </div>
       </div>
     </header>
 
-    <section class="panel hero">
-      <label for="theme">Theme <em>optional</em></label>
-      <input id="theme" v-model="theme" :disabled="active" maxlength="200" placeholder="Leave empty — AI invents the concept" @keyup.enter="canStart && start()" />
-      <div class="seg" role="group" aria-label="Number of collections">
-        <button v-for="n in [1, 2, 3]" :key="n" :class="{ on: count === n }" :disabled="active" @click="count = n">
-          {{ n }} {{ n === 1 ? "collection" : "collections" }}
-        </button>
-      </div>
-      <div class="seg" role="group" aria-label="Seed variations per scene">
-        <button v-for="n in [1, 2, 4]" :key="n" :class="{ on: variations === n }" :disabled="active" @click="variations = n">
-          {{ n }} {{ n === 1 ? "variation" : "variations" }} <small v-if="n === 4">· extended</small>
-        </button>
-      </div>
-      <CodexSettings ref="codexSettings" :disabled="active" />
-      <CompositionControls ref="composition" :disabled="active" />
-      <p class="total">{{ count }} {{ count === 1 ? "collection" : "collections" }} × 4 scenes × {{ variations }} {{ variations === 1 ? "variation" : "variations" }} = <b>{{ totalImages }} images</b></p>
-      <button class="go" :disabled="!canStart" @click="start">
-        {{ active ? "Generating…" : "Generate Collections" }}
-      </button>
-      <p v-if="hint" class="note warn">{{ hint }}</p>
+    <p v-if="app.connection === 'lost'" class="lost" role="alert">
+      Нет связи с сервером NeuroStudio. Показано последнее известное состояние<template v-if="running"> — генерация на сервере при этом продолжается</template>. Связь проверяется автоматически.
+    </p>
 
-      <div v-if="active || run?.status === 'completed'" class="progress">
-        <div class="row">
-          <span>{{ phase }}</span>
-          <b>{{ run?.done }} / {{ run?.total }} images</b>
-        </div>
-        <div class="bar"><div :style="{ width: percent + '%' }" /></div>
-        <p v-if="run?.title" class="muted">{{ run.title }}</p>
-      </div>
+    <main>
+      <CreateView v-if="ui.view === 'create'" />
+      <LibraryView v-else-if="ui.view === 'library'" />
+      <ActivityView v-else />
+    </main>
 
-      <p v-if="run?.status === 'failed'" class="note bad">
-        Run stopped<template v-if="run.collections > 1"> at collection {{ run.collection }} / {{ run.collections }}</template>: {{ run.error }}
-        <template v-if="run.finished.length"> Completed collections are saved below.</template>
-      </p>
-      <p v-if="error" class="note bad">{{ error }}</p>
-    </section>
-
-    <section class="gallery">
-      <h2>Collections</h2>
-      <p v-if="!collections.length" class="muted">No collections yet. Press Generate Collections.</p>
-      <CollectionCard
-        v-for="c in collections"
-        :key="c.id"
-        :collection="c"
-        @open="(f, v) => (lightbox = { id: c.id, frame: f, variant: v })"
-        @changed="(sel) => onSelections(c, sel)"
-        @feedback="(fb) => onFeedback(c, fb)"
-      />
-    </section>
-
-    <Lightbox v-if="lightbox && lightboxCollection" :collection="lightboxCollection" :frame="lightbox.frame" :variant="lightbox.variant" @close="lightbox = null" />
+    <div class="toast" role="status" aria-live="polite">
+      <div v-if="ui.toast" class="tmsg">{{ ui.toast }}</div>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.page { max-width: 1100px; margin: 0 auto; padding: 24px 20px 80px; }
-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
-h1 { margin: 0; font-size: 22px; letter-spacing: 0.3px; }
-h1 span { color: var(--accent-2); }
-.comfy { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); padding: 6px 12px; border-radius: 999px; }
-.comfy i { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); }
-.comfy.ok i { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px; }
-.hero { display: grid; gap: 12px; }
-label { font-size: 13px; color: var(--muted); }
-label em { font-style: normal; opacity: 0.6; margin-left: 6px; }
-input { width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 12px 14px; outline: none; }
-input:focus { border-color: var(--accent); }
-.total { margin: 0; font-size: 14px; color: var(--muted); }
-.total b { color: var(--text); }
-.seg { display: flex; gap: 8px; flex-wrap: wrap; }
-.seg button { flex: 1; min-width: 150px; padding: 10px 12px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
-.seg button small { opacity: 0.7; }
-.seg button.on { color: var(--text); border-color: var(--accent); background: #1d1a3a; }
-.seg button:disabled { cursor: not-allowed; opacity: 0.6; }
-.go { margin-top: 4px; padding: 18px; font-size: 18px; font-weight: 600; color: #fff; border: 0; border-radius: 12px; cursor: pointer; background: linear-gradient(135deg, var(--accent), #5b8cff); }
-.go:hover:not(:disabled) { filter: brightness(1.1); }
-.go:disabled { opacity: 0.45; cursor: not-allowed; }
-.note { margin: 0; padding: 10px 12px; border-radius: 10px; font-size: 14px; }
-.note.warn { background: #2a2111; color: var(--warn); }
-.note.bad { background: #2a1219; color: var(--bad); }
-.progress { margin-top: 6px; }
-.row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
-.bar { height: 8px; border-radius: 99px; background: var(--panel-2); overflow: hidden; }
-.bar div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width 0.4s; }
-.muted { color: var(--muted); font-size: 14px; }
-.gallery { margin-top: 36px; display: grid; gap: 20px; }
-h2 { margin: 0; font-size: 16px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+.shell { min-height: 100vh; }
+.top { position: sticky; top: 0; z-index: 20; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 20px; padding: 12px 32px; background: rgba(10, 11, 15, 0.88); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+.brand b { font-size: 18px; letter-spacing: 0.2px; }
+.brand b span { color: var(--accent-2); }
+.tabs { display: flex; gap: 4px; padding: 3px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.tabs button { position: relative; display: flex; align-items: center; gap: 8px; padding: 7px 22px; border: 0; border-radius: 9px; background: none; color: var(--text-2); font-weight: 500; font-size: 15px; }
+.tabs button:hover:not(.on) { color: var(--text); background: var(--panel-2); }
+.tabs button.on { background: var(--panel-3); color: var(--text); }
+.count { min-width: 20px; padding: 0 6px; border-radius: 99px; background: var(--accent-soft); color: var(--accent-2); font-size: 12px; line-height: 20px; text-align: center; }
+.live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 3px var(--accent-soft); }
+.live.bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+.right { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+.runpill { display: flex; align-items: center; gap: 8px; padding: 5px 14px; border-radius: 99px; border: 1px solid var(--line-2); background: var(--panel); color: var(--text); font-size: 13px; min-width: 0; }
+.runpill:hover { border-color: var(--accent); }
+.runpill .dot { background: var(--ok); }
+.runpill.failed .dot { background: var(--bad); }
+.runpill .rl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini { width: 64px; height: 4px; border-radius: 99px; background: var(--panel-3); overflow: hidden; flex: none; }
+.mini span { display: block; height: 100%; background: var(--accent-2); transition: width 0.4s; }
+.comfy { display: flex; align-items: center; gap: 6px; padding: 5px 14px; border-radius: 99px; border: 1px solid var(--line); background: var(--panel); font-size: 13px; color: var(--text-2); white-space: nowrap; }
+.comfy .dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.comfy.down { border-color: rgba(240, 80, 110, 0.4); color: #f58aa0; }
+.comfy.down .dot { background: var(--bad); box-shadow: none; }
+.cs { color: var(--muted); }
+.comfy.down .cs { color: inherit; }
+.lost { margin: 0; padding: 8px 32px; background: var(--warn-soft); color: #f7c06a; font-size: 14px; border-bottom: 1px solid rgba(245, 165, 36, 0.25); }
+/* Desktop only (27" 2560×1440 primary, 1920×1080 secondary): wide but bounded content area. */
+main { padding: 28px 40px 80px; max-width: 2240px; margin: 0 auto; }
+.toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 50; pointer-events: none; }
+.tmsg { background: var(--panel-3); border: 1px solid var(--line-2); color: var(--text); padding: 10px 18px; border-radius: 10px; box-shadow: var(--shadow); font-size: 14px; max-width: 640px; }
+@media (max-width: 1360px) {
+  .top { padding: 10px 20px; }
+  main { padding: 20px 20px 80px; }
+  .cs { display: none; }
+}
 </style>
