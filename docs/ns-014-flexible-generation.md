@@ -43,7 +43,7 @@ Backend и движок: коллекции из **1–4 кадров**, выб�
 
 ## 3. Prompt Plan v3
 
-`schemas/prompt-plan.schema.json` — шаблон v3; под конкретный запуск схему строит `planSchema(models)` (`src/codex.ts`): ровно N кадров, `frame ≤ N`, enum моделей = назначенные. Один batch = **один вызов Codex CLI**; отдельных запросов на перевод нет.
+`schemas/prompt-plan.schema.json` — шаблон v3; под конкретный запуск схему строит `planSchema(models)` (`src/codex.ts`): ровно N кадров, `frame ≤ N`, enum моделей = назначенные. Один batch = **один вызов Codex CLI**; отдельных запросов на перевод нет. Формат ответа определяет вызывающая функция: `generatePlan()` просит один Prompt Plan, `generateBatch()` всегда Batch Plan `{ "collections": [...] }`, в том числе при `collections = 1` (инструкция совпадает со схемой).
 
 Обязательные поля нового плана: `concept.title/titleRu/description/descriptionRu/heroine`, у кадра `frame/model/summary/summaryRu/positive`. Positive prompt английский.
 
@@ -68,7 +68,7 @@ Backend и движок: коллекции из **1–4 кадров**, выб�
 
 ## 7. История запусков
 
-`GET /api/runs?limit=` (по умолчанию 20, максимум 50) читает `output/batches/*/batch-plan.json` (без базы и очередей): `id, createdAt, status (running|completed|failed|interrupted), theme, collections, frames, variations, totalImages, imageModels|null, collectionIds, error?, errorCode?, codex?`. Старые файлы без новых полей: `frames` берётся из планов (иначе 4), `imageModels = null`. Нечитаемые папки пропускаются и не расходуют лимит. Запуск, который ещё планируется Codex, в списке не виден (файл пишется после плана): для него есть `GET /api/status`.
+`GET /api/runs?limit=` (по умолчанию 20, максимум 50) читает `output/batches/*/batch-plan.json` (без базы и очередей): `id, createdAt, status (running|completed|failed|interrupted), theme, collections, frames, variations, totalImages, imageModels|null, collectionIds, error?, errorCode?, codex?`. Старые файлы без новых полей: `frames` берётся из планов (иначе 4), `imageModels = null`. Нечитаемые папки пропускаются и не расходуют лимит. Запись запуска создаётся **до** обращения к Codex (NS-014A): сразу после проверки настроек и доступности ComfyUI в `output/batches/<id>/batch-plan.json` пишутся id, время, тема, `count/frames/variations`, `imageModels`, итоговая `composition`, выбранные настройки Codex (`codex.model`, `codex.reasoningEffort`), `status: "running"`, `collectionIds: []`, `plans: []`. После успешного ответа Codex та же запись дополняется планами и метриками (`codex.seconds`, `codex.tokens`), затем `collectionIds` и итоговым статусом. Если Codex или проверка плана завершаются ошибкой, запись получает `status: "failed"`, исходный текст `error` и стабильный `errorCode` (`CODEX_FAILED` / `PLAN_INVALID`), остаётся в `GET /api/runs`, ни одно задание ComfyUI не создаётся, Codex повторно не вызывается. Новых хранилищ, очередей и восстановления запусков нет; старые batch-файлы читаются как раньше.
 
 ## 8. Коды ошибок — `src/errors.ts`
 
@@ -123,4 +123,4 @@ curl -X POST http://127.0.0.1:8787/api/autopilot/start -H "content-type: applica
 
 ## 13. Проверка
 
-`npm test` — 81 тест (24 новых в `tests/ns014.test.ts`: каталог и Auto Mix, Only/Custom и ошибки, схемы и валидация v3 для 1–4 кадров, запрос к Codex, mock Codex, jobs, API-валидация до запуска, старый запрос, примеры 1/2/4 кадров, снимок настроек, остановка при сбое без повторов, коды ошибок, `/api/runs` со старыми файлами, ZIP для 1–4 кадров с побайтовым сравнением, совместимость старых коллекций). `npm run typecheck`, `npm run build`, `npm run build:prototype` — без ошибок. ComfyUI не запускался.
+`npm test` — 85 тестов (28 новых в `tests/ns014.test.ts`: каталог и Auto Mix, Only/Custom и ошибки, схемы и валидация v3 для 1–4 кадров, запрос к Codex, mock Codex, jobs, API-валидация до запуска, старый запрос, примеры 1/2/4 кадров, снимок настроек, остановка при сбое без повторов, коды ошибок, `/api/runs` со старыми файлами, ZIP для 1–4 кадров с побайтовым сравнением, совместимость старых коллекций). `npm run typecheck`, `npm run build`, `npm run build:prototype` — без ошибок. ComfyUI не запускался.

@@ -574,3 +574,112 @@ test("old collections: no frameCount means 4 frames; nothing is rewritten; old f
   await app.inject({ method: "PUT", url: "/api/collections/legacy/feedback", headers: H, payload: { rating: 5 } });
   assert.equal(await readFile(join(dir, "legacy", "collection.json"), "utf8"), before);
 });
+
+// ---------- NS-014A: response format and run history ----------
+
+test("planPrompt: Batch Plan format follows generateBatch (also for one collection), Prompt Plan follows generatePlan", async () => {
+  // direct builder: default format depends on count, an explicit flag overrides it
+  assert.match(planPrompt("I", undefined, [], 1, undefined, [C]), /Return a Prompt Plan/);
+  assert.match(planPrompt("I", undefined, [], 2, undefined, [C]), /Return a Batch Plan/);
+  assert.match(planPrompt("I", undefined, [], 1, undefined, [C], true), /Return a Batch Plan: JSON \{"collections": \[\.\.\.\]\} with exactly 1 Prompt Plans/);
+  assert.doesNotMatch(planPrompt("I", undefined, [], 1, undefined, [C], true), /must be substantially different from each other/);
+  // through the real functions: capture the prompt each one sends to Codex (stdin) with a mock launcher
+  const dir = await mkdtemp(join(tmpdir(), "ns14a-"));
+  const planFile = join(dir, "plan.json");
+  const promptFile = join(dir, "prompt.txt");
+  await writeFile(planFile, JSON.stringify(planV3("One", [C])));
+  const script = `
+    const fs = require("fs");
+    const a = process.argv, out = a[a.indexOf("-o") + 1];
+    const p = JSON.parse(fs.readFileSync(process.env.NS_PLAN, "utf8"));
+    const s = JSON.parse(fs.readFileSync(a[a.indexOf("--output-schema") + 1], "utf8"));
+    let text = "";
+    process.stdin.on("data", (d) => (text += d));
+    process.stdin.on("end", () => {
+      fs.writeFileSync(process.env.NS_PROMPT, text + " SCHEMA_ROOT_REQUIRED=" + JSON.stringify(s.required));
+      fs.writeFileSync(out, JSON.stringify(s.required && s.required[0] === "collections" ? { collections: [p] } : p));
+    });
+  `;
+  process.env.NS_PLAN = planFile;
+  process.env.NS_PROMPT = promptFile;
+  const launcher = { command: process.execPath, args: ["-e", script, "--"] };
+  await generateBatch({ count: 1, models: [C], launcher, timeoutMs: 10_000 });
+  const batchPrompt = await readFile(promptFile, "utf8");
+  assert.match(batchPrompt, /Return a Batch Plan/);
+  assert.match(batchPrompt, /SCHEMA_ROOT_REQUIRED=\["collections"\]/);
+  const { generatePlan } = await import("../src/codex.ts");
+  await generatePlan({ models: [C], launcher, timeoutMs: 10_000 });
+  const planPromptText = await readFile(promptFile, "utf8");
+  assert.match(planPromptText, /Return a Prompt Plan/);
+  assert.doesNotMatch(planPromptText, /Return a Batch Plan/);
+  assert.doesNotMatch(planPromptText, /SCHEMA_ROOT_REQUIRED=\["collections"\]/);
+});
+
+for (const [label, err, code] of [
+  ["Codex failure", new CodexError("Codex exited with code 1: boom"), "CODEX_FAILED"],
+  ["plan validation failure", new PlanError("Invalid prompt plan: frame 2 model must be duskrose"), "PLAN_INVALID"],
+] as const) {
+  test(`planning failure (${label}): run record exists, status failed, code kept, no ComfyUI jobs, one Codex call`, async () => {
+    let calls = 0;
+    const s = await setup({
+      plan: async () => {
+        calls++;
+        throw err;
+      },
+    });
+    await s.runner.start("rain", 2, 2, { global: {}, scenes: [] }, { model: "gpt-x" }, { mode: "only", models: [D, D, D] });
+    await wait(s.runner);
+    assert.equal(calls, 1); // never repeated
+    assert.equal(s.seen.submit.length, 0); // nothing reached ComfyUI
+    assert.equal(s.runner.state.status, "failed");
+    const runs = await s.get("/api/runs");
+    assert.equal(runs.length, 1);
+    const r = runs[0];
+    assert.deepEqual([r.status, r.errorCode, r.error], ["failed", code, err.message]);
+    assert.deepEqual([r.theme, r.collections, r.frames, r.variations, r.totalImages], ["rain", 2, 3, 2, 12]);
+    assert.deepEqual(r.imageModels, { mode: "only", models: [D, D, D] });
+    assert.deepEqual(r.collectionIds, []);
+    const file = JSON.parse(await readFile(join(s.batchesDir, r.id, "batch-plan.json"), "utf8"));
+    assert.equal(file.status, "failed");
+    assert.deepEqual(file.plans, []);
+    assert.deepEqual(file.collectionIds, []);
+    assert.ok(file.createdAt && "composition" in file);
+    assert.equal(file.codex.model, "gpt-x");
+    assert.equal(file.codex.seconds, undefined);
+    assert.equal(s.runner.state.runId, r.id);
+    assert.deepEqual(await s.get("/api/collections"), []); // no collection folders
+  });
+}
+
+test("planning stage: record is written before Codex is called (status running, empty plans) and completed with plans and metrics afterwards", async () => {
+  let seenBefore: any;
+  let batchesDir = "";
+  const s = await setup({
+    plan: async (o) => {
+      const [run] = await (await import("../server/runs.ts")).listRuns(batchesDir, 20, s.runner.state.runId);
+      seenBefore = { run, file: JSON.parse(await readFile(join(batchesDir, run.id, "batch-plan.json"), "utf8")) };
+      return { plans: Array.from({ length: o.count }, (_, i) => planV3(`Done ${i}`, o.models)), raw: "", ms: 2500, tokens: { input: 10, cachedInput: 0, output: 5, total: 15 } };
+    },
+  });
+  batchesDir = s.batchesDir;
+  await s.start({ collections: 1, frames: 2, variations: 1 });
+  await wait(s.runner);
+  assert.equal(seenBefore.run.status, "running");
+  assert.equal(seenBefore.file.status, "running");
+  assert.deepEqual(seenBefore.file.plans, []);
+  assert.deepEqual(seenBefore.file.collectionIds, []);
+  assert.deepEqual([seenBefore.file.count, seenBefore.file.frames, seenBefore.file.variations], [1, 2, 1]);
+  assert.deepEqual(seenBefore.file.imageModels, { mode: "auto", models: [C, D] });
+  assert.equal(seenBefore.file.codex.seconds, undefined);
+  // after success: the same record carries plans, metrics and the collection id
+  const [run] = await s.get("/api/runs");
+  assert.equal(run.id, seenBefore.run.id);
+  assert.equal(run.status, "completed");
+  assert.equal(run.collectionIds.length, 1);
+  assert.equal(run.codex.seconds, 2.5);
+  const file = JSON.parse(await readFile(join(s.batchesDir, run.id, "batch-plan.json"), "utf8"));
+  assert.equal(file.plans.length, 1);
+  assert.equal(file.plans[0].frames.length, 2);
+  assert.deepEqual(file.codex.tokens, { input: 10, cachedInput: 0, output: 5, total: 15 });
+  assert.equal(s.seen.submit.length, 2);
+});

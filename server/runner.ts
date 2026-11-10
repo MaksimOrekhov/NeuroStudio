@@ -135,13 +135,16 @@ export class AutopilotRunner {
   private async execute(cfg: RunSettings) {
     const { theme, collections: count, frames, variations, imageModels, composition, codex: sel } = cfg;
     const { collectionsDir, batchesDir, log } = this.deps;
-    const avoid = (await listCollections(collectionsDir, 20)).map((c) => c.title);
-    const r = await this.deps.plan({ theme, avoid, count, composition, models: imageModels.models, model: sel.model, reasoningEffort: sel.reasoningEffort }); // all plans are validated before any GPU work
     const resolved = composition ? resolveComposition(composition, frames) : null;
     const generation: Generation = { theme: theme ?? null, imageModels, composition: resolved };
+    // The run record exists BEFORE Codex is called, so a failed planning step is still in the history.
     const batchDir = join(batchesDir, `${new Date().toISOString().slice(0, 10)}-${Date.now().toString(36)}`);
     await mkdir(batchDir, { recursive: true });
-    const codexMeta = { seconds: r.ms / 1000, tokens: r.tokens, model: sel.model ?? null, reasoningEffort: sel.reasoningEffort ?? null };
+    const codexMeta: { seconds?: number; tokens: unknown; model: string | null; reasoningEffort: string | null } = {
+      tokens: null,
+      model: sel.model ?? null,
+      reasoningEffort: sel.reasoningEffort ?? null,
+    };
     const batch = {
       createdAt: new Date().toISOString(),
       theme: theme ?? null,
@@ -155,11 +158,27 @@ export class AutopilotRunner {
       collectionIds: [] as string[],
       error: undefined as string | undefined,
       errorCode: undefined as ErrorCode | undefined,
-      plans: r.plans,
+      plans: [] as unknown[],
     };
     const saveBatch = () => writeFile(join(batchDir, "batch-plan.json"), JSON.stringify(batch, null, 2));
     await saveBatch();
     this.state = { ...this.state, runId: basename(batchDir) };
+
+    let r: BatchResult;
+    try {
+      const avoid = (await listCollections(collectionsDir, 20)).map((c) => c.title);
+      r = await this.deps.plan({ theme, avoid, count, composition, models: imageModels.models, model: sel.model, reasoningEffort: sel.reasoningEffort }); // all plans are validated before any GPU work
+    } catch (e) {
+      batch.status = "failed";
+      batch.error = (e as Error).message;
+      batch.errorCode = runErrorCode(e);
+      await saveBatch().catch(() => {});
+      throw e; // no ComfyUI jobs, no second Codex call
+    }
+    codexMeta.seconds = r.ms / 1000;
+    codexMeta.tokens = r.tokens;
+    batch.plans = r.plans;
+    await saveBatch();
 
     try {
       for (const [i, plan] of r.plans.entries()) {
@@ -174,7 +193,7 @@ export class AutopilotRunner {
           jobs: buildJobs(plan, this.deps.baseGraph, slug, variations),
           dir: join(collectionsDir, id),
           client: this.deps.client,
-          codex: codexMeta,
+          codex: { ...codexMeta, seconds: r.ms / 1000 },
           generation,
           log,
           onProgress: (m: Manifest) => {
