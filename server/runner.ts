@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { CodexSelection } from "../src/codexModels.ts";
 import type { ComfyClient, Graph } from "../src/comfy.ts";
 import type { BatchOptions, BatchResult } from "../src/codex.ts";
 import { resolveComposition, type Composition } from "../src/composition.ts";
@@ -65,7 +66,7 @@ export class AutopilotRunner {
     return this.busy;
   }
 
-  async start(theme: string | undefined, count = 1, variations = 1, composition?: Composition): Promise<RunState> {
+  async start(theme: string | undefined, count = 1, variations = 1, composition?: Composition, codex: CodexSelection = {}): Promise<RunState> {
     if (this.busy) throw new RunError("already_running", "An Autopilot run is already in progress", 409);
     this.busy = true; // synchronous lock: a concurrent second call cannot pass this line
     try {
@@ -75,7 +76,7 @@ export class AutopilotRunner {
       throw new RunError("comfy_unavailable", `ComfyUI is not reachable: ${(e as Error).message}. Start ComfyUI and try again.`, 503);
     }
     this.state = { ...idle(), status: "planning", theme, total: FRAMES * variations * count, collections: count, variations, startedAt: new Date().toISOString() };
-    void this.execute(theme, count, variations, composition)
+    void this.execute(theme, count, variations, composition, codex)
       .catch((e) => {
         this.state = { ...this.state, status: "failed", error: (e as Error).message, finishedAt: new Date().toISOString() };
       })
@@ -85,12 +86,13 @@ export class AutopilotRunner {
     return this.state;
   }
 
-  private async execute(theme: string | undefined, count: number, variations: number, composition?: Composition) {
+  private async execute(theme: string | undefined, count: number, variations: number, composition?: Composition, sel: CodexSelection = {}) {
     const { collectionsDir, batchesDir, log } = this.deps;
     const avoid = (await listCollections(collectionsDir, 20)).map((c) => c.title);
-    const r = await this.deps.plan({ theme, avoid, count, composition }); // all plans are validated before any GPU work
+    const r = await this.deps.plan({ theme, avoid, count, composition, model: sel.model, reasoningEffort: sel.reasoningEffort }); // all plans are validated before any GPU work
     const batchDir = join(batchesDir, `${new Date().toISOString().slice(0, 10)}-${Date.now().toString(36)}`);
     await mkdir(batchDir, { recursive: true });
+    const codexMeta = { seconds: r.ms / 1000, tokens: r.tokens, model: sel.model ?? null, reasoningEffort: sel.reasoningEffort ?? null };
     const batch = {
       createdAt: new Date().toISOString(),
       theme: theme ?? null,
@@ -98,7 +100,7 @@ export class AutopilotRunner {
       variations,
       composition: composition ? resolveComposition(composition) : null, // what was requested per scene (after inheritance)
       status: "running" as "running" | "done" | "failed",
-      codex: { seconds: r.ms / 1000, tokens: r.tokens },
+      codex: codexMeta,
       collectionIds: [] as string[],
       error: undefined as string | undefined,
       plans: r.plans,
@@ -119,7 +121,7 @@ export class AutopilotRunner {
           jobs: buildJobs(plan, this.deps.baseGraph, slug, variations),
           dir: join(collectionsDir, id),
           client: this.deps.client,
-          codex: { seconds: r.ms / 1000, tokens: r.tokens },
+          codex: codexMeta,
           log,
           onProgress: (m: Manifest) => {
             const cur = m.frames.find((f) => f.status === "submitted");

@@ -8,6 +8,7 @@ import { FeedbackError, SelectionError, listCollections, readCollection, safeIma
 import { ExportError, planExport, zipStream } from "./export.ts";
 import { getThumbnail } from "./thumbs.ts";
 import { parseComposition } from "../src/composition.ts";
+import { loadCatalog, resolveSelection, CodexSelectionError, effortLabel, type Catalog } from "../src/codexModels.ts";
 import { parseCount, parseVariations } from "../src/promptPlan.ts";
 import { RunError, type AutopilotRunner } from "./runner.ts";
 
@@ -19,6 +20,8 @@ export interface AppDeps {
   webDist?: string;
   /** Thumbnail cache (default: ../thumbs next to the collections folder, inside output/). */
   thumbsDir?: string;
+  /** Local Codex model catalog (default: read from the installed Codex CLI). For tests. */
+  loadCatalog?: () => Promise<Catalog>;
   /** For tests */
   statusClient?: Pick<ComfyClient, "systemStats" | "queue">;
 }
@@ -26,6 +29,7 @@ export interface AppDeps {
 export function buildApp(d: AppDeps) {
   const app = Fastify({ logger: false });
   const thumbsDir = d.thumbsDir ?? join(dirname(resolve(d.collectionsDir)), "thumbs");
+  const catalog = d.loadCatalog ?? (() => loadCatalog());
   const status = d.statusClient ?? new ComfyClient(d.comfyUrl, fetch, 2000);
   const allowedHosts = new Set([`127.0.0.1:${d.port}`, `localhost:${d.port}`, "127.0.0.1:5173", "localhost:5173"]);
 
@@ -50,24 +54,31 @@ export function buildApp(d: AppDeps) {
   });
 
   app.post("/api/autopilot/start", async (req, reply) => {
-    const body = (req.body ?? {}) as { theme?: unknown; collections?: unknown; variations?: unknown; composition?: unknown };
+    const body = (req.body ?? {}) as { theme?: unknown; collections?: unknown; variations?: unknown; composition?: unknown; codexModel?: unknown; codexReasoningEffort?: unknown };
     let count: number;
     let variations: number;
     let composition: ReturnType<typeof parseComposition>;
+    let codex: ReturnType<typeof resolveSelection>;
     try {
       count = parseCount(body.collections);
       variations = parseVariations(body.variations);
       composition = parseComposition(body.composition);
+      codex = body.codexModel == null && body.codexReasoningEffort == null ? {} : resolveSelection(await catalog(), body.codexModel, body.codexReasoningEffort); // old calls never touch the catalog
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
     const theme = typeof body.theme === "string" ? body.theme.trim().slice(0, 200) : "";
     try {
-      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations, composition));
+      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations, composition, codex));
     } catch (e) {
       if (e instanceof RunError) return reply.code(e.httpStatus).send({ error: e.message, code: e.code });
       throw e;
     }
+  });
+
+  app.get("/api/codex/models", async () => {
+    const c = await catalog();
+    return { source: c.source, error: c.error, models: c.models.map((m) => ({ ...m, efforts: m.efforts.map((id) => ({ id, label: effortLabel(id) })) })) };
   });
 
   const activeId = () => (d.runner.active ? d.runner.state.collectionId : undefined);

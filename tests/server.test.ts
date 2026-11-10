@@ -323,3 +323,42 @@ test("composition: API validates it (400), old body works, and ONE plan call rec
   while (runner.active) await new Promise((r) => setTimeout(r, 10));
   assert.equal(seen[1], undefined);
 });
+
+test("codex model: API validates against the catalog (400), passes the choice to the plan call and records it in batch + collection metadata", async () => {
+  const seen: { model?: string; reasoningEffort?: string }[] = [];
+  const planJson = strictPlan("CM");
+  const { app: _unused, runner, release, dir } = await setup({
+    plan: async (o) => {
+      seen.push({ model: o.model, reasoningEffort: o.reasoningEffort });
+      return { plans: [planJson], raw: "", ms: 1, tokens: null };
+    },
+  });
+  const models = [{ id: "m-big", name: "Big", efforts: ["low", "xhigh"] }, { id: "m-small", name: "Small", efforts: ["medium"] }];
+  const app2 = buildApp({ runner, collectionsDir: dir, comfyUrl: "http://x", port: PORT, loadCatalog: async () => ({ models, source: "cache" }) });
+  const go = (payload: Record<string, unknown>) => app2.inject({ method: "POST", url: "/api/autopilot/start", headers: H, payload: { collections: 1, variations: 1, ...payload } as never });
+  const list = (await app2.inject({ method: "GET", url: "/api/codex/models", headers: H })).json();
+  assert.equal(list.models[0].efforts[1].label, "Extra High");
+  assert.equal(list.models[0].efforts[1].id, "xhigh");
+  for (const bad of [{ codexModel: "nope" }, { codexModel: "m-small", codexReasoningEffort: "xhigh" }, { codexReasoningEffort: "extra_high" }, { codexModel: 1 }]) {
+    const r = await go(bad);
+    assert.equal(r.statusCode, 400, JSON.stringify(bad));
+    assert.ok(r.json().error);
+  }
+  assert.equal(seen.length, 0); // nothing was launched
+  assert.equal((await go({ codexModel: "m-big", codexReasoningEffort: "xhigh" })).statusCode, 202);
+  release();
+  while (runner.active) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(seen, [{ model: "m-big", reasoningEffort: "xhigh" }]);
+  const c = (await app2.inject({ method: "GET", url: "/api/collections", headers: H })).json()[0];
+  assert.equal(c.codex.model, "m-big");
+  assert.equal(c.codex.reasoningEffort, "xhigh");
+  // old call without parameters: no catalog needed, Default recorded as null
+  assert.equal((await go({})).statusCode, 202);
+  while (runner.active) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(seen[1], { model: undefined, reasoningEffort: undefined });
+  const c2 = (await app2.inject({ method: "GET", url: "/api/collections", headers: H })).json()[0];
+  assert.equal(c2.codex.model, null);
+  // catalog unavailable: unknown ids are refused, Default still works
+  const app3 = buildApp({ runner, collectionsDir: dir, comfyUrl: "http://x", port: PORT, loadCatalog: async () => ({ models: [], source: "none", error: "gone" }) });
+  assert.equal((await app3.inject({ method: "POST", url: "/api/autopilot/start", headers: H, payload: { codexModel: "m-big" } as never })).statusCode, 400);
+});

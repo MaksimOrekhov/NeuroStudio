@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { getCollections, getStatus, startRun, type ApiStatus, type Collection } from "./api";
 import CollectionCard from "./CollectionCard.vue";
+import CodexSettings from "./CodexSettings.vue";
 import CompositionControls from "./CompositionControls.vue";
 import Lightbox from "./Lightbox.vue";
 
@@ -12,6 +13,7 @@ const count = ref(3);
 const variations = ref(2);
 const totalImages = computed(() => count.value * 4 * variations.value);
 const composition = ref<InstanceType<typeof CompositionControls> | null>(null);
+const codexSettings = ref<InstanceType<typeof CodexSettings> | null>(null);
 const starting = ref(false);
 const error = ref("");
 const serverDown = ref(false);
@@ -69,7 +71,7 @@ async function start() {
   error.value = "";
   starting.value = true;
   try {
-    const s = await startRun(theme.value, count.value, variations.value, composition.value?.value);
+    const s = await startRun(theme.value, count.value, variations.value, composition.value?.value, codexSettings.value?.value);
     if (status.value) status.value.run = s;
   } catch (e) {
     error.value = (e as Error).message;
@@ -118,6 +120,7 @@ onBeforeUnmount(() => clearTimeout(timer));
           {{ n }} {{ n === 1 ? "variation" : "variations" }} <small v-if="n === 4">· extended</small>
         </button>
       </div>
+      <CodexSettings ref="codexSettings" :disabled="active" />
       <CompositionControls ref="composition" :disabled="active" />
       <p class="total">{{ count }} {{ count === 1 ? "collection" : "collections" }} × 4 scenes × {{ variations }} {{ variations === 1 ? "variation" : "variations" }} = <b>{{ totalImages }} images</b></p>
       <button class="go" :disabled="!canStart" @click="start">

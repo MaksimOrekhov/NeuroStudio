@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import type { CodexSelection } from "./codexModels.ts";
 import { compositionPrompt, type Composition } from "./composition.ts";
 import { validateBatch, validatePlan, type PromptPlan } from "./promptPlan.ts";
 
@@ -82,6 +83,9 @@ export interface CodexOptions {
   avoid?: string[];
   /** Optional user composition requirements per scene number (NS-011). */
   composition?: Composition;
+  /** Explicit user choice (NS-012). Unset = Codex settings / CODEX_MODEL as before. */
+  model?: string;
+  reasoningEffort?: string;
   timeoutMs?: number;
   /** For tests: override the launcher. */
   launcher?: { command: string; args: string[] };
@@ -91,17 +95,13 @@ export interface BatchOptions extends CodexOptions {
   count: number;
 }
 
-/** Exactly one Codex process. No retries: any failure throws CodexError. Returns the parsed final message. */
-export async function runCodex(prompt: string, schema: object, timeoutMs: number, launcher = resolveCodex()) {
-  const { command, args } = launcher;
-  const dir = await mkdtemp(join(tmpdir(), "neurostudio-codex-"));
-  const outFile = join(dir, "last-message.json");
-  const schemaFile = join(dir, "schema.json");
-  await writeFile(schemaFile, JSON.stringify(schema));
-  const full = [
-    ...args,
+/** Arguments for `codex exec` (no shell). An explicit model beats CODEX_MODEL; Default adds no override at all. */
+export function execArgs(schemaFile: string, outFile: string, sel: CodexSelection = {}, env: { CODEX_MODEL?: string } = process.env): string[] {
+  const model = sel.model ?? env.CODEX_MODEL;
+  return [
     "exec",
-    ...(process.env.CODEX_MODEL ? ["-m", process.env.CODEX_MODEL] : []),
+    ...(model ? ["-m", model] : []),
+    ...(sel.reasoningEffort ? ["-c", `model_reasoning_effort="${sel.reasoningEffort}"`] : []),
     "--sandbox", "read-only",
     "--ephemeral",
     "--skip-git-repo-check",
@@ -110,6 +110,16 @@ export async function runCodex(prompt: string, schema: object, timeoutMs: number
     "-o", outFile,
     "-",
   ];
+}
+
+/** Exactly one Codex process. No retries: any failure throws CodexError. Returns the parsed final message. */
+export async function runCodex(prompt: string, schema: object, timeoutMs: number, launcher = resolveCodex(), sel: CodexSelection = {}) {
+  const { command, args } = launcher;
+  const dir = await mkdtemp(join(tmpdir(), "neurostudio-codex-"));
+  const outFile = join(dir, "last-message.json");
+  const schemaFile = join(dir, "schema.json");
+  await writeFile(schemaFile, JSON.stringify(schema));
+  const full = [...args, ...execArgs(schemaFile, outFile, sel)];
   const t0 = Date.now();
   try {
     const stdout = await new Promise<string>((res, rej) => {
@@ -152,13 +162,14 @@ export async function runCodex(prompt: string, schema: object, timeoutMs: number
   }
 }
 
+const selection = (o: CodexOptions): CodexSelection => ({ model: o.model, reasoningEffort: o.reasoningEffort });
 const timeout = (o: CodexOptions, count: number) => o.timeoutMs ?? Number(process.env.CODEX_TIMEOUT_MS ?? 300_000) * count;
 
 /** One Codex call, one collection. */
 export async function generatePlan(opts: CodexOptions = {}): Promise<CodexResult> {
   const schema = JSON.parse(await readFile(SCHEMA, "utf8"));
   const instructions = await loadInstructions();
-  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid), schema, timeout(opts, 1), opts.launcher);
+  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid), schema, timeout(opts, 1), opts.launcher, selection(opts));
   return { plan: validatePlan(r.json), raw: r.raw, ms: r.ms, tokens: r.tokens };
 }
 
@@ -176,7 +187,7 @@ export async function batchSchema(count: number, planSchemaPath = SCHEMA): Promi
 /** One Codex call for the whole batch; all plans are validated before anything is returned. */
 export async function generateBatch(opts: BatchOptions): Promise<BatchResult> {
   const instructions = await loadInstructions();
-  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count, opts.composition), await batchSchema(opts.count), timeout(opts, opts.count), opts.launcher);
+  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count, opts.composition), await batchSchema(opts.count), timeout(opts, opts.count), opts.launcher, selection(opts));
   return { plans: validateBatch(r.json, opts.count), raw: r.raw, ms: r.ms, tokens: r.tokens };
 }
 

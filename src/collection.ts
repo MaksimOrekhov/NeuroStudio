@@ -70,7 +70,8 @@ export interface Manifest {
   createdAt: string;
   status: "running" | "done" | "failed";
   dir: string;
-  codex?: { seconds: number; tokens: unknown };
+  /** model / reasoningEffort: the user's explicit choice, null = Codex default. The effective model is not known to us. */
+  codex?: { seconds: number; tokens: unknown; model?: string | null; reasoningEffort?: string | null };
   comfySeconds?: number;
   /** Seed variants per frame (absent in older collections: 1). */
   variations?: number;
