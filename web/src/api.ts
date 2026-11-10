@@ -69,11 +69,11 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const getStatus = () => json<ApiStatus>("/api/status");
 export const getCollections = (limit = 8) => json<Collection[]>(`/api/collections?limit=${limit}`);
-export const startRun = (theme: string, collections: number, variations: number, composition?: Composition) =>
+export const startRun = (theme: string, collections: number, variations: number, composition?: Composition, codex: { codexModel?: string; codexReasoningEffort?: string } = {}) =>
   json<RunState>("/api/autopilot/start", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ theme, collections, variations, composition }),
+    body: JSON.stringify({ theme, collections, variations, composition, ...codex }),
   });
 export const imageUrl = (id: string, file: string, download = false) =>
   `/api/collections/${encodeURIComponent(id)}/images/${file}${download ? "?download=1" : ""}`;
@@ -91,3 +91,10 @@ export const saveFeedback = (id: string, fb: { rating: number | null; tags: stri
     headers: { "content-type": "application/json" },
     body: JSON.stringify(fb),
   });
+
+export interface CodexModels {
+  source: "cache" | "bundled" | "none";
+  error?: string;
+  models: { id: string; name: string; defaultEffort?: string; efforts: { id: string; label: string }[] }[];
+}
+export const getCodexModels = () => json<CodexModels>("/api/codex/models");
