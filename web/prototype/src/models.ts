@@ -1,4 +1,6 @@
 // NS-013 prototype: image-model registry and per-scene assignment rules.
+import { W, nPlural } from "./ru";
+
 // Pure TypeScript (no Vue) so the rules can be unit-tested and later moved to src/ in NS-014.
 
 export interface ImageModel {
@@ -60,12 +62,12 @@ export function assignModels(mode: ModelMode, frames: number, custom: readonly s
   return Array.from({ length: frames }, (_, i) => (custom[i] && ids.includes(custom[i]) ? custom[i] : auto[i]));
 }
 
-/** "Scenes 1–2", "Scene 3", "Scenes 1, 3" */
+/** "Кадры 1–2", "Кадр 3", "Кадры 1, 3" */
 export function sceneList(nums: number[]): string {
   if (!nums.length) return "";
   const contiguous = nums.every((n, i) => i === 0 || n === nums[i - 1] + 1);
   const body = nums.length === 1 ? String(nums[0]) : contiguous ? `${nums[0]}–${nums[nums.length - 1]}` : nums.join(", ");
-  return `${nums.length === 1 ? "Scene" : "Scenes"} ${body}`;
+  return `${nums.length === 1 ? "Кадр" : "Кадры"} ${body}`;
 }
 
 /** Per-model usage for the summary, in registry order; models with no scenes are omitted. */
@@ -77,12 +79,8 @@ export function modelUsage(assigned: readonly string[], models = IMAGE_MODELS): 
 
 export const totalImages = (collections: number, frames: number, variations: number) => collections * frames * variations;
 
-export function plural(n: number, one: string, many = `${one}s`): string {
-  return `${n} ${n === 1 ? one : many}`;
-}
-
-/** "2 collections × 3 frames × 2 variations = 12 images" */
+/** "2 коллекции × 3 кадра × 2 варианта = 12 изображений" */
 export function formula(collections: number, frames: number, variations: number): string {
   const total = totalImages(collections, frames, variations);
-  return `${plural(collections, "collection")} × ${plural(frames, "frame")} × ${plural(variations, "variation")} = ${plural(total, "image")}`;
+  return `${nPlural(collections, W.collection)} × ${nPlural(frames, W.frame)} × ${nPlural(variations, W.variant)} = ${nPlural(total, W.image)}`;
 }

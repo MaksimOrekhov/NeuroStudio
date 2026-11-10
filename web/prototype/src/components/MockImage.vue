@@ -31,7 +31,7 @@ const p = computed(() => {
 </script>
 
 <template>
-  <svg class="mock" viewBox="0 0 200 300" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Placeholder artwork">
+  <svg class="mock" viewBox="0 0 200 300" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Изображение-заглушка">
     <defs>
       <linearGradient :id="`${uid}s`" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" :stop-color="p.top" />

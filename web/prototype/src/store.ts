@@ -69,12 +69,13 @@ export function resetScene(i: number) {
 }
 export function copySceneToAll(i: number) {
   for (let j = 0; j < form.frames; j++) if (j !== i) Object.assign(form.scenes[j], { ...form.scenes[i] });
-  toast(`Scene ${String(i + 1).padStart(2, "0")} settings copied to ${form.frames - 1 === 1 ? "the other scene" : `the other ${form.frames - 1} scenes`}.`);
+  const others = form.frames - 1;
+  toast(`Настройки кадра ${String(i + 1).padStart(2, "0")} скопированы ${others === 1 ? "во второй кадр" : `в остальные кадры (${others})`}.`);
 }
 export function resetComposition() {
   Object.assign(form.global, blank(AUTO));
   for (const s of form.scenes) Object.assign(s, blank(INHERIT));
-  toast("Composition reset: every scene is Auto.");
+  toast("Композиция сброшена: во всех кадрах «Авто».");
 }
 
 export function openSceneComposition(i: number) {
@@ -133,10 +134,17 @@ export const running = computed(() => run.status === "planning" || run.status ==
 const TITLES = ["Morning Ferry", "Orchard Ladder", "Blue Hour Laundry", "Salt Flat Picnic", "Library Ladder Noon", "Greenhouse Rain"];
 let timer: number | undefined;
 let titleOffset = 0;
+/** Demo presets fast-forward the simulation synchronously up to `stopAt` finished images. */
+let instant = false;
+let stopAt = Infinity;
+function later(fn: () => void, ms: number) {
+  if (instant) fn();
+  else timer = window.setTimeout(fn, ms);
+}
 
 export function startDemoRun() {
   if (running.value) return;
-  if (ui.comfy === "down") return toast("ComfyUI is unavailable — generation is disabled.");
+  if (ui.comfy === "down") return toast("ComfyUI недоступен — генерация отключена.");
   clearTimeout(timer);
   const snap: RunSnapshot = {
     theme: form.theme.trim(),
@@ -159,9 +167,9 @@ export function startDemoRun() {
     currentScene: 0,
     currentVariant: 0,
     error: "",
-    items: Array.from({ length: snap.collections }, (_, i) => ({ title: `Collection ${i + 1}`, status: "waiting", done: 0, total: snap.frames * snap.variations })),
+    items: Array.from({ length: snap.collections }, (_, i) => ({ title: `Коллекция ${i + 1}`, status: "waiting", done: 0, total: snap.frames * snap.variations })),
   });
-  timer = window.setTimeout(planned, 2600);
+  later(planned, 2600);
 }
 
 function planned() {
@@ -178,13 +186,13 @@ function beginCollection(i: number) {
   const c = makeCollection({
     id: `demo-${Date.now().toString(36)}-${i + 1}`,
     title: it.title,
-    description: "Demo collection produced by the prototype's simulated run (placeholder artwork).",
+    description: "Demo collection from the simulated run (placeholder artwork).",
     daysAgo: 0,
     hue: (titleOffset * 47 + i * 83) % 360,
     frames: snap.frames,
     variations: snap.variations,
     models: snap.models,
-    summaries: Array.from({ length: snap.frames }, (_, k) => `Shot brief for scene ${k + 1}, written by Codex (demo).`),
+    summaries: Array.from({ length: snap.frames }, (_, k) => `Shot brief for scene ${k + 1} (demo).`),
     status: "running",
     states: Array.from({ length: snap.frames * snap.variations }, () => "pending"),
     theme: snap.theme || null,
@@ -212,7 +220,7 @@ function tick() {
     run.currentScene = next.frame;
     run.currentVariant = next.variant;
   }
-  timer = window.setTimeout(() => {
+  later(() => {
     const f = c.frames.find((x) => x.status === "submitted");
     if (f) {
       f.status = "done";
@@ -220,6 +228,7 @@ function tick() {
       c.doneFrames++;
       it.done++;
       run.done++;
+      if (instant && run.done >= stopAt) instant = false;
     }
     if (c.frames.some((x) => x.status === "pending")) return tick();
     c.status = "done";
@@ -236,7 +245,7 @@ export function failDemoRun(reason: "error" | "comfy") {
   if (!running.value) return;
   clearTimeout(timer);
   if (run.status === "planning") {
-    run.error = reason === "comfy" ? "ComfyUI is not reachable." : "Codex returned an invalid prompt plan (frames[2].positive missing).";
+    run.error = reason === "comfy" ? "ComfyUI недоступен." : "Codex вернул некорректный план промптов (frames[2].positive missing).";
     run.items.forEach((it) => (it.status = "not_started"));
   } else {
     const c = currentCollection();
@@ -244,14 +253,14 @@ export function failDemoRun(reason: "error" | "comfy") {
     if (c && f) {
       // A frame that ComfyUI already accepted has an unknown outcome when ComfyUI disappears.
       f.status = reason === "comfy" ? "timeout" : "failed";
-      f.error = reason === "comfy" ? undefined : "ComfyUI execution error: CUDA out of memory (KSampler, node 3)";
+      f.error = reason === "comfy" ? undefined : "Ошибка выполнения в ComfyUI: CUDA out of memory (KSampler, узел 3)";
       c.status = "failed";
     }
     run.items.forEach((it, i) => {
       if (i === run.current) it.status = "failed";
       else if (i > run.current) it.status = "not_started";
     });
-    run.error = reason === "comfy" ? "ComfyUI went away while an image was being generated." : "ComfyUI execution error: CUDA out of memory (KSampler, node 3)";
+    run.error = reason === "comfy" ? "ComfyUI отключился во время генерации изображения." : "Ошибка выполнения в ComfyUI: CUDA out of memory (KSampler, узел 3)";
   }
   run.status = "failed";
   run.finishedAt = new Date().toISOString();
@@ -273,17 +282,60 @@ function recordRun() {
   });
 }
 
-export function resetDemo() {
+export function resetDemo(silent = false) {
   clearTimeout(timer);
+  instant = false;
   Object.assign(run, { status: "idle", snapshot: null, items: [], done: 0, total: 0, error: "" });
   library.items = mockCollections();
   library.runs = mockRuns();
   ui.comfy = "ok";
   ui.openCollection = null;
-  toast("Demo data restored.");
+  if (!silent) toast("Демо-данные восстановлены.");
 }
 
 export function setComfy(state: "ok" | "down") {
   ui.comfy = state;
   if (state === "down" && running.value) failDemoRun("comfy");
+}
+
+/** Review presets: a run in progress (9 of 16 images) or a run stopped by a ComfyUI disconnect at that point. */
+export function showRunPreset(kind: "generating" | "failed") {
+  resetDemo(true);
+  instant = true;
+  stopAt = 9;
+  startDemoRun();
+  instant = false;
+  stopAt = Infinity;
+  if (kind === "failed") setComfy("down");
+  go("activity");
+}
+
+const SAMPLE_THEME = "тихий приморский городок ранней осенью";
+
+/**
+ * Opens a fixed review state from the URL hash (used for screenshots and quick review links):
+ * #create, #advanced, #custom, #library, #collection, #activity-generating, #activity-failed.
+ */
+export function applyPreset(name: string) {
+  if (name === "create" || name === "advanced" || name === "custom") {
+    form.theme = SAMPLE_THEME;
+    form.frames = name === "create" ? 3 : 4;
+  }
+  if (name === "advanced") {
+    form.codexModel = "codex-model-a";
+    form.codexEffort = "high";
+    Object.assign(form.global, { framing: "full_body", viewpoint: "eye_level" });
+    Object.assign(form.scenes[0], { pose: "sitting_on_a_bench_or_ledge", framing: "waist_up" });
+    ui.advancedOpen = true;
+    ui.openScene = 0;
+  }
+  if (name === "custom") {
+    setModelMode("custom");
+    form.custom[1] = "duskrose";
+    form.custom[3] = "crimson-oath";
+  }
+  if (name === "library") go("library");
+  if (name === "collection") go("library", "2026-11-10-lemon-grove-siesta");
+  if (name === "activity-generating") showRunPreset("generating");
+  if (name === "activity-failed") showRunPreset("failed");
 }

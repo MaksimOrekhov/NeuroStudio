@@ -9,7 +9,63 @@ npm run dev:prototype  # http://127.0.0.1:5174
 
 `npm run build:prototype` / `npm run preview:prototype` build and serve the static prototype. The real app (`npm start`, `npm run dev:web`) is untouched.
 
-The prototype never calls `/api`, Codex or ComfyUI. **Generate · demo** starts a simulated run (planning ~2.6 s, then one placeholder image every ~0.65 s) that fills Activity and Library with demo collections. The **Demo ▾** menu in the header switches ComfyUI connected/unavailable, simulates a generation error or a ComfyUI disconnect, and restores the mock data.
+The prototype never calls `/api`, Codex or ComfyUI. **Сгенерировать · демо** starts a simulated run (planning ~2.6 s, then one placeholder image every ~0.65 s) that fills Запуски and Библиотека with demo collections. The **Демо ▾** menu in the header switches ComfyUI connected/unavailable, simulates a generation error or a ComfyUI disconnect, shows fixed review states (run in progress, run stopped) and restores the mock data. Review states can also be opened directly: `http://127.0.0.1:5174/#advanced` (presets: `create`, `advanced`, `custom`, `library`, `collection`, `activity-generating`, `activity-failed`).
+
+Sections 1–14 were written before NS-013A and name UI elements in English; the Russian names actually used in the interface are in the terminology table of section 0.
+
+## 0. NS-013A — обязательные требования (утверждено после первого просмотра)
+
+Архитектура «Создание / Библиотека / Запуски» одобрена. Поверх неё действуют два обязательных требования, которые нельзя потерять при интеграции (NS-014/NS-015).
+
+**Только десктоп.** Приложение используется на домашнем Windows-компьютере с 27-дюймовым монитором.
+- Основное разрешение — **2560 × 1440**, дополнительно проверяется **1920 × 1080**.
+- Мобильная версия не нужна: нет мобильной навигации, нижней панели «Сгенерировать», телефонных брейкпоинтов и мобильных скриншотов. Обычное изменение размера окна браузера должно оставаться работоспособным (примерно до 1280 px).
+- Контент не зажимается в узкий контейнер: общая ширина до 2240 px; «Создание» и «Запуски» — до 1880 px (форма + сводка 420 px), чтобы строки и селекты не растягивались на весь монитор.
+- «Создание»: 4 колонки карточек кадров; селекты композиции — минимум 260 px, длинные русские названия не обрезаются.
+- «Библиотека»: сетка `auto-fill, minmax(470px, 1fr)` — 4 колонки на 2560, 3 на 1920. В карточке коллекции изображения важнее метаданных: боковая панель фиксирована (380 px), всё остальное отдано кадрам (около 430 px в ширину на 2560).
+- Базовый размер шрифта 15 px.
+
+**Только русский интерфейс.** Без vue-i18n и переключения языка — прямые русские строки и небольшие справочники в `web/prototype/src/ru.ts`.
+- Переведено всё: разделы, подписи, подсказки, плейсхолдеры, фильтры, статусы, ошибки, теги оценки, меню «Демо», `title`/`aria-label`, даты (`ru-RU`), числовые подписи с правильными формами множественного числа (`ruPlural`: 1 кадр / 2 кадра / 5 кадров; после «из» — родительный падеж: «из 4 изображений»).
+- Технические id не меняются: интерфейс показывает «Сидя на стуле», в запрос уходит `sitting_on_a_chair` (`OPTION_RU` — справочник подписей поверх каталога `src/composition.ts`; тест проверяет, что у каждого id есть подпись). Теги оценки хранятся с теми же id, что в NS-010.
+- Не переводятся названия продуктов и моделей: NeuroStudio, Codex, ComfyUI, Crimson Oath, Duskrose; технические термины seed, prompt_id, PNG, ZIP.
+- Промпты для генерации остаются на английском (это сказано и в интерфейсе, в блоке «Генерация промптов»).
+- Тексты, которые генерирует Codex (название и описание концепции, краткие описания кадров), в прототипе остаются английскими, как в реальных данных. Нужно ли получать их на русском — открытый вопрос (раздел 14).
+
+### Утверждённая терминология
+
+| Было (EN) | В интерфейсе |
+|---|---|
+| Create / Library / Activity | Создание / Библиотека / Запуски |
+| Theme / Idea | Тема / Идея |
+| Collections · Frames per collection · Seed variations | Коллекции · Кадров в коллекции · Вариантов на кадр |
+| Scenes · Scene 01 | Кадры · Кадр 01 |
+| Image models · Auto Mix · *Model* only · Custom per scene | Модели изображений · Автоподбор · Только *Модель* · Для каждого кадра |
+| Advanced settings · Prompt generation | Дополнительные настройки · Генерация промптов |
+| Codex model · Reasoning effort (Low / Medium / High / Extra High) | Модель Codex · Глубина рассуждений (Низкая / Средняя / Высокая / Очень высокая) |
+| Composition · Global defaults · Individual scenes | Композиция · Общие настройки · Отдельные кадры |
+| Pose · Orientation · Framing · Viewpoint | Поза · Поворот · Кадрирование · Ракурс |
+| Auto · Inherit global | Авто · Как в общих |
+| Copy to all scenes · Reset scene · Reset all | Скопировать во все кадры · Сбросить кадр · Сбросить всё |
+| Generation summary · Generate | Сводка генерации · Сгенерировать |
+| Select Best · Best | Выбрать лучшим · Лучший |
+| Feedback · note | Оценка · заметка |
+| Export selected · ZIP | Скачать выбранные · ZIP |
+| All · Needs Best · Ready to export · Issues | Все · Требуется выбор · Готово к экспорту · С проблемами |
+| Completed · Generating · Interrupted · Failed | Готово · Генерация · Прервано · Ошибка |
+| Run completed · Run stopped | Генерация завершена · Генерация остановлена |
+| Current run · Recent runs · Run settings | Текущая генерация · История запусков · Параметры генерации |
+| Queued · Not generated · Unknown state | В очереди · Не создано · Состояние неизвестно |
+
+Полный список подписей опций композиции и тегов оценки — `web/prototype/src/ru.ts`.
+
+### Рекомендации для NS-014 / NS-015
+
+1. Перенести `ru.ts` (подписи, `ruPlural`, `ofImages`, форматирование дат) в `web/src` как есть; новые строки сразу писать по-русски. Тест полноты `OPTION_RU` сохранить: новая опция в каталоге без русской подписи должна ронять тесты.
+2. Сообщения сервера, которые видит пользователь (`exportStatus.message`, ошибки валидации, `RunError`, «ComfyUI is not reachable…»), сейчас английские. Рекомендация: сервер отдаёт код и параметры, русский текст формирует UI; технические детали (CUDA, имена узлов ComfyUI) показываются как есть.
+3. Не добавлять мобильные брейкпоинты; каждую новую страницу проверять на 2560 × 1440 и 1920 × 1080. Скриншоты для приёмки — headless Chrome на этих размерах; в прототипе для этого есть пресеты в URL: `#create`, `#advanced`, `#custom`, `#library`, `#collection`, `#activity-generating`, `#activity-failed`.
+4. При переносе экранов в рабочее приложение сохранить ограничения ширины (2240 / 1880 px), колонки библиотеки и минимальную ширину селектов 260 px.
+5. Промпты, схема Prompt Plan и Creative Director остаются на английском; русификация касается только интерфейса.
 
 ## 1. What exists today (inventory)
 
@@ -60,7 +116,7 @@ Why not a dashboard or a single long page:
 
 ## 4. Create
 
-Layout: main column + sticky Summary column (desktop); single column with a sticky bottom bar `16 images · 2 × 4 × 2 · Generate · demo` (≤ 900 px).
+Layout: main column + sticky Summary column (420 px), bounded to 1880 px; desktop only (section 0).
 
 Top-to-bottom order follows decision importance:
 
@@ -117,7 +173,7 @@ Rules:
 
 ## 7. Library
 
-- **Grid of collection cards** (2 columns on desktop, 1 on mobile). Each card: title, status badge, date, chips (`N frames`, `× V variations`, rating), a **strip of all scenes** in a fixed 4-slot grid (2:3 thumbnails; a 1- or 2-frame collection simply uses fewer slots, so thumbnails have the same size everywhere), Best marker ★, model dot per scene, and the export state (`✓ Ready to export` / `Best chosen 2/4` bar / `5 of 8 images saved`).
+- **Grid of collection cards** (4 columns at 2560 px, 3 at 1920 px). Each card: title, status badge, date, chips (`N frames`, `× V variations`, rating), a **strip of all scenes** in a fixed 4-slot grid (2:3 thumbnails; a 1- or 2-frame collection simply uses fewer slots, so thumbnails have the same size everywhere), Best marker ★, model dot per scene, and the export state (`✓ Ready to export` / `Best chosen 2/4` bar / `5 of 8 images saved`).
 - Scene thumbnail = selected Best, else the only/first finished variant, else a placeholder with the state (`Queued`, `Generating`, `Not generated`, `Unknown`, `Failed`).
 - **Filters**: All · Needs Best · Ready to export · Issues (failed + interrupted); title search.
 - **Collection detail** (replaces the grid, `← Library`):
@@ -141,7 +197,7 @@ Rules:
 - Dark only (as today), tokens in `web/prototype/src/styles.css`: background `#0a0b0f`, panels `#12141b`/`#181b24`, text `#e8eaf1`, muted `#8a8fa2` (≥ 4.5:1 on panels), accent violet `#7c6cff` kept from the current brand, semantic ok/warn/bad colours as today.
 - Segmented controls for small closed sets, selects for long catalogs, chips for state. One primary button per screen (Generate, Export).
 - States: hover (border/background), `:focus-visible` ring on every control, disabled at 45 % with a reason nearby, spinners respect `prefers-reduced-motion`.
-- Layout: desktop first (Windows, ≥ 1280 px), breakpoints 1100 / 900 / 560 px. Mobile: tabs under the logo, sticky Generate bar, one-column cards, no horizontal scroll (checked at 375 px).
+- Layout: desktop only (27-inch monitor, 2560 × 1440 primary, 1920 × 1080 secondary); one breakpoint at 1500 px narrows the side columns. No mobile layout (NS-013A).
 - No decoration without function: the only colour accents are model colours, status colours and the selection colour.
 
 ## 10. Reusable pieces
@@ -208,25 +264,24 @@ Rules:
 - **Composition requests** for scenes > frames from older clients must be rejected or trimmed consistently.
 - **Third model.** Needs a checkpoint, workflow compatibility (same UNET loader node?), and a decision on its Auto Mix position. Checkpoint discovery stays out of scope.
 - **Run history.** `batch-plan.json` has no per-collection status beyond ids; Activity history may need `batch.status` per collection (small additive change).
-- **Browser locale.** The prototype formats dates in en-GB to match the English UI; the real app currently uses the browser locale.
+- **Generated text language.** Concept titles, descriptions and shot briefs come from Codex in English. Showing them in Russian would need an extra Russian field in the Prompt Plan (prompts themselves stay English) — decide before NS-014.
+- **Server messages.** Export, validation and run errors are English strings from the server today; see the NS-014/015 recommendation in section 0.
 
-## 15. Verification (NS-013)
+## 15. Verification (NS-013 + NS-013A)
 
-- `npm run typecheck` (root + `web` + `web/prototype`), `npm test` (55 tests incl. `tests/ns013-prototype.test.ts`: Auto Mix, Only/Custom, third model, summary text, N-frame export), `npm run build`, `npm run build:prototype` — all pass.
+- `npm run typecheck` (root + `web` + `web/prototype`), `npm test` (57 tests incl. `tests/ns013-prototype.test.ts`: Auto Mix, Only/Custom, third model, Russian summary text and plural forms, completeness of Russian composition labels, N-frame export), `npm run build`, `npm run build:prototype` — all pass.
 - No changes under `src/`, `server/`, `schemas/`, `prompts/`, `workflows/`, `web/src/`. Codex and ComfyUI were not started.
-- Checked in the browser at 1440 × 1000 and 375 × 812 (no horizontal scroll): all segmented controls, mode switch, custom selects, Advanced open/close, global + per-scene composition (inherit/own chips, copy, reset), Summary updates, demo run, simulated error and ComfyUI disconnect, Library filters/search, detail Select Best, viewer keys, feedback, export enable/disable.
+- Checked in the browser at 2560 × 1440 and 1920 × 1080: frames 1–4, all model modes, custom selects, Advanced open/close (also via a scene card), global + per-scene composition (inherit/own chips, copy, reset), Codex model/effort, Summary, demo run, simulated error and ComfyUI disconnect, review presets, Library filters/search, detail Select Best, viewer (←/→, B on any keyboard layout, Esc), feedback, ZIP enable/disable. A scan of every state found no untranslated UI text (only product and technical names).
 
-Screenshots (`docs/screenshots/`):
+Screenshots (`docs/screenshots/`, headless Chrome at the exact window size, opened via the URL presets):
 
 | File | State |
 |---|---|
-| `14-ns013-create.jpg` | Create — normal mode (2 × 3 × 2 = 12 images, Auto Mix) |
-| `15-ns013-advanced.jpg` | Create — Advanced settings (Codex + global and per-scene composition) |
-| `16-ns013-custom-models.jpg` | Create — Custom per scene models |
-| `17-ns013-library.jpg` | Library grid (4 / 3 / 2-frame collections, failed) |
-| `18-ns013-library-states.jpg` | Library — interrupted, failed, 1-frame |
-| `19-ns013-collection-detail.jpg` | Collection detail (Select Best, Feedback, details) |
-| `20-ns013-activity-generating.jpg` | Activity — generating |
-| `21-ns013-activity-failed.jpg` | Activity — stopped after ComfyUI disconnect |
-| `22-ns013-mobile-create.jpg` | Mobile — Create |
-| `23-ns013-mobile-library.jpg` | Mobile — Library |
+| `14-ns013-create-2560.jpg` | Создание — обычный режим (2 × 3 × 2 = 12, Автоподбор) |
+| `15-ns013-advanced-2560.jpg` | Создание — дополнительные настройки (Codex, общая и покадровая композиция) |
+| `16-ns013-custom-models-2560.jpg` | Создание — модель для каждого кадра |
+| `17-ns013-library-2560.jpg` | Библиотека, 4 колонки (4/3/2/1 кадра, ошибка, прервано) |
+| `18-ns013-collection-detail-2560.jpg` | Карточка коллекции (выбор лучших, оценка, параметры) |
+| `19-ns013-activity-generating-2560.jpg` | Запуски — идёт генерация |
+| `20-ns013-activity-failed-2560.jpg` | Запуски — генерация остановлена после отключения ComfyUI |
+| `21-ns013-create-1920.jpg` … `25-ns013-activity-failed-1920.jpg` | Создание, доп. настройки, библиотека, карточка коллекции, запуски на 1920 × 1080 |

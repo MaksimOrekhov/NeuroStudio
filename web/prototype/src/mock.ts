@@ -97,7 +97,7 @@ export function mockCollections(): ProtoCollection[] {
       status: "done",
       selections: { "1": 2, "3": 1 },
       feedback: { rating: 4, tags: ["beautiful_lighting", "original_concept"] },
-      theme: "summer citrus orchard",
+      theme: "летний цитрусовый сад",
       codex: ["codex-model-a", "high"],
       composition: [{ framing: "full_body" }, { framing: "waist_up" }, { viewpoint: "slightly_elevated" }, {}],
     }),
@@ -130,7 +130,7 @@ export function mockCollections(): ProtoCollection[] {
       status: "done",
       selections: { "1": 3, "2": 1 },
       feedback: { rating: 5, tags: ["beautiful_heroine", "good_composition"], note: "Strong sky; v3 of scene 1 is the keeper." },
-      theme: "windy day by the sea",
+      theme: "ветреный день у моря",
       codex: [null, "medium"],
       composition: [{ viewpoint: "low_angle", framing: "full_body" }, { framing: "head_and_shoulders" }],
     }),
@@ -150,9 +150,9 @@ export function mockCollections(): ProtoCollection[] {
       ],
       status: "failed",
       states: ["done", "done", "done", "done", "done", "failed", "pending", "pending"],
-      error: "ComfyUI execution error: CUDA out of memory (KSampler, node 3)",
+      error: "Ошибка выполнения в ComfyUI: CUDA out of memory (KSampler, узел 3)",
       selections: { "1": 1 },
-      theme: "evening calligraphy",
+      theme: "вечерняя каллиграфия",
     }),
     makeCollection({
       id: "2026-11-06-velvet-rain-terrace",
@@ -181,7 +181,7 @@ export function mockCollections(): ProtoCollection[] {
       variations: 2,
       summaries: ["Waiting on the platform, face close-up, warm rim light."],
       status: "done",
-      theme: "single portrait, tram platform",
+      theme: "один портрет, трамвайная платформа",
       codex: ["codex-model-b", "low"],
     }),
   ];
@@ -191,11 +191,10 @@ export function mockCollections(): ProtoCollection[] {
 export const MOCK_CODEX = {
   source: "mock" as const,
   models: [
-    { id: "codex-model-a", name: "Codex Model A", efforts: ["low", "medium", "high", "xhigh"] },
-    { id: "codex-model-b", name: "Codex Model B", efforts: ["low", "medium", "high"] },
+    { id: "codex-model-a", name: "Модель A (демо)", efforts: ["low", "medium", "high", "xhigh"] },
+    { id: "codex-model-b", name: "Модель B (демо)", efforts: ["low", "medium", "high"] },
   ],
 };
-export const EFFORT_LABEL: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra High" };
 
 export interface RunRecord {
   id: string;
@@ -210,18 +209,18 @@ export interface RunRecord {
 }
 
 export const mockRuns = (): RunRecord[] => [
-  { id: "run-1110", startedAt: "2026-11-10T09:30:00Z", theme: "summer citrus orchard", collections: 1, frames: 4, variations: 2, status: "completed", collectionIds: ["2026-11-10-lemon-grove-siesta"] },
+  { id: "run-1110", startedAt: "2026-11-10T09:30:00Z", theme: "летний цитрусовый сад", collections: 1, frames: 4, variations: 2, status: "completed", collectionIds: ["2026-11-10-lemon-grove-siesta"] },
   { id: "run-1109", startedAt: "2026-11-09T18:02:00Z", theme: null, collections: 1, frames: 3, variations: 1, status: "completed", collectionIds: ["2026-11-09-glasshouse-morning"] },
-  { id: "run-1108", startedAt: "2026-11-08T12:44:00Z", theme: "windy day by the sea", collections: 1, frames: 2, variations: 4, status: "completed", collectionIds: ["2026-11-08-harbor-kite-day"] },
+  { id: "run-1108", startedAt: "2026-11-08T12:44:00Z", theme: "ветреный день у моря", collections: 1, frames: 2, variations: 4, status: "completed", collectionIds: ["2026-11-08-harbor-kite-day"] },
   {
     id: "run-1107",
     startedAt: "2026-11-07T20:15:00Z",
-    theme: "evening calligraphy",
+    theme: "вечерняя каллиграфия",
     collections: 2,
     frames: 4,
     variations: 2,
     status: "failed",
     collectionIds: ["2026-11-07-paper-lantern-study"],
-    error: "ComfyUI execution error: CUDA out of memory (KSampler, node 3)",
+    error: "Ошибка выполнения в ComfyUI: CUDA out of memory (KSampler, узел 3)",
   },
 ];

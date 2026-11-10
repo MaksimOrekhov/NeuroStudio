@@ -1,6 +1,7 @@
 // NS-013 prototype: collection view model and the N-frame export rule proposed for NS-014.
 import type { Collection, Frame } from "../../src/api";
 import type { Settings } from "../../../src/composition";
+import { W, nPlural } from "./ru";
 
 /** Generation metadata the Library shows. Mirrors what batch-plan.json / collection.json already store. */
 export interface CollectionMeta {
@@ -49,20 +50,20 @@ export function exportState(c: ProtoCollection): { ready: boolean; resolved: num
   const scenes = scenesOf(c);
   const resolved = scenes.filter((s) => finalOf(c, s)).length;
   const total = scenes.length;
-  if (resolved === total) return { ready: true, resolved, total, message: `${total} ${total === 1 ? "scene" : "scenes"} · original PNG files` };
+  if (resolved === total) return { ready: true, resolved, total, message: `${nPlural(total, W.frame)} · исходные PNG` };
   const missing = scenes.filter((s) => !s.variants.some((v) => v.image)).length;
-  if (missing) return { ready: false, resolved, total, message: `${missing} ${missing === 1 ? "scene has" : "scenes have"} no finished image` };
-  return { ready: false, resolved, total, message: `Select best images: ${resolved}/${total}` };
+  if (missing) return { ready: false, resolved, total, message: `Нет готового изображения: ${nPlural(missing, W.frame)}` };
+  return { ready: false, resolved, total, message: `Выберите лучшие: ${resolved}/${total}` };
 }
 
 export type Badge = { text: string; cls: "ok" | "run" | "warn" | "bad" };
 
 export function badgeOf(c: ProtoCollection): Badge {
   const total = c.frames.length;
-  if (c.status === "done") return { text: "Completed", cls: "ok" };
-  if (c.status === "running") return { text: `Generating ${c.doneFrames}/${total}`, cls: "run" };
-  if (c.status === "interrupted") return { text: `Interrupted · ${c.doneFrames}/${total}`, cls: "warn" };
-  return { text: `Failed · ${c.doneFrames}/${total}`, cls: "bad" };
+  if (c.status === "done") return { text: "Готово", cls: "ok" };
+  if (c.status === "running") return { text: `Генерация ${c.doneFrames}/${total}`, cls: "run" };
+  if (c.status === "interrupted") return { text: `Прервано · ${c.doneFrames}/${total}`, cls: "warn" };
+  return { text: `Ошибка · ${c.doneFrames}/${total}`, cls: "bad" };
 }
 
 /** Variants whose state is unknown (submitted or timed out when the run stopped). */
