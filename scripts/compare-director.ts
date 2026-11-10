@@ -2,6 +2,7 @@
 // same history, no image generation. Results go to output/director-eval/ (git-ignored).
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { autoMix } from "../src/imageModels.ts";
 import { batchSchema, loadInstructions, planPrompt, runCodex } from "../src/codex.ts";
 import { validateBatch } from "../src/promptPlan.ts";
 import { listCollections } from "../server/collections.ts";
@@ -31,7 +32,7 @@ console.log(`History (${avoid.length}): ${avoid.join(" | ")}`);
 const v1Schema = await batchSchema(COUNT, join(root, "prompts/baseline/prompt-plan.v1.schema.json"));
 const runs = [
   { name: "v1", prompt: v1Prompt(rules, avoid), schema: v1Schema },
-  { name: "v2", prompt: planPrompt(await loadInstructions(), undefined, avoid, COUNT), schema: await batchSchema(COUNT) },
+  { name: "v2", prompt: planPrompt(await loadInstructions(), undefined, avoid, COUNT, undefined, autoMix(4)), schema: await batchSchema(COUNT, undefined, autoMix(4)) },
 ];
 
 for (const run of runs) {

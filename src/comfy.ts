@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { IMAGE_MODELS, type ImageModelId } from "./imageModels.ts";
 
 // ---------- Types ----------
 
@@ -46,11 +47,8 @@ export const FIELDS: Record<keyof GenParams, Field> = {
   unet: { node: "90:78", cls: "UNETLoader", input: "unet_name" },
 };
 
-/** Plan model id -> checkpoint file. Both use the same graph (workflows/anima-crimson-oath.api.json); only the UNET differs (verified in NS-001). */
-export const MODELS = {
-  "crimson-oath": "vetehineCrimsonOathILL_v02ANM.safetensors",
-  duskrose: "Duskrose v4 ANM.safetensors",
-} as const;
+/** Plan model id -> checkpoint file (from the shared catalog). Both use the same graph (workflows/anima-crimson-oath.api.json); only the UNET differs (verified in NS-001). */
+export const MODELS = Object.fromEntries(IMAGE_MODELS.map((m) => [m.id, m.checkpoint])) as Record<ImageModelId, string>;
 
 export async function loadWorkflow(path: string): Promise<Graph> {
   let raw: string;

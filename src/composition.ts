@@ -87,8 +87,11 @@ function checkSettings(s: unknown, where: string, allowInherit: boolean): Settin
   return out;
 }
 
-/** Validates the untrusted `composition` request field. undefined/null = not given. */
-export function parseComposition(input: unknown): Composition | undefined {
+/**
+ * Validates the untrusted `composition` request field against the real frame count (default 4, the old behaviour).
+ * Settings for a frame that does not exist are an error; there are no hidden scenes. undefined/null = not given.
+ */
+export function parseComposition(input: unknown, frames = SCENES): Composition | undefined {
   if (input === undefined || input === null) return undefined;
   if (typeof input !== "object" || Array.isArray(input)) throw new CompositionError("composition must be an object");
   const { global, scenes, ...rest } = input as Record<string, unknown>;
@@ -96,15 +99,16 @@ export function parseComposition(input: unknown): Composition | undefined {
   const out: Composition = {};
   if (global !== undefined) out.global = checkSettings(global, "global", false);
   if (scenes !== undefined) {
-    if (!Array.isArray(scenes) || scenes.length > SCENES) throw new CompositionError(`composition.scenes must be an array of at most ${SCENES} objects`);
+    if (!Array.isArray(scenes)) throw new CompositionError("composition.scenes must be an array");
+    if (scenes.length > frames) throw new CompositionError(`composition.scenes has ${scenes.length} entries but the collection has only ${frames} frame${frames === 1 ? "" : "s"}`);
     out.scenes = scenes.map((s, i) => checkSettings(s, `scenes[${i}]`, true));
   }
   return out;
 }
 
 /** Scene value > scene Auto > Inherit Global > global Auto. Auto resolves to "no requirement". */
-export function resolveComposition(c?: Composition): Resolved {
-  return Array.from({ length: SCENES }, (_, i) => {
+export function resolveComposition(c?: Composition, frames = SCENES): Resolved {
+  return Array.from({ length: frames }, (_, i) => {
     const out: Settings = {};
     for (const f of COMPOSITION_FIELDS) {
       const own = c?.scenes?.[i]?.[f] ?? INHERIT;
@@ -118,8 +122,8 @@ export function resolveComposition(c?: Composition): Resolved {
 const labelOf = (f: CompositionField, id: string) => (COMPOSITION_OPTIONS[f].find((x) => x.id === id)?.label ?? id).toLowerCase();
 
 /** Text block appended to the Codex request, or "" when nothing is constrained (the request is then exactly as before). */
-export function compositionPrompt(c?: Composition): string {
-  const resolved = resolveComposition(c);
+export function compositionPrompt(c?: Composition, frames = SCENES): string {
+  const resolved = resolveComposition(c, frames);
   if (!resolved.some((s) => COMPOSITION_FIELDS.some((f) => s[f]))) return "";
   const scenes = resolved.map((s, i) => {
     const lines = COMPOSITION_FIELDS.filter((f) => s[f]).map((f) => `- ${FIELD_ASK[f]}: ${labelOf(f, s[f]!)}`);

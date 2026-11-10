@@ -1,4 +1,5 @@
 // NS-013 prototype: image-model registry and per-scene assignment rules.
+import { IMAGE_MODELS as CATALOG, autoMix } from "../../../src/imageModels";
 import { W, nPlural } from "./ru";
 
 // Pure TypeScript (no Vue) so the rules can be unit-tested and later moved to src/ in NS-014.
@@ -16,10 +17,7 @@ export interface ImageModel {
  * the mode picker, Auto Mix and the per-scene selects pick it up without other UI changes.
  * Checkpoint discovery from ComfyUI is intentionally out of scope.
  */
-export const IMAGE_MODELS: ImageModel[] = [
-  { id: "crimson-oath", name: "Crimson Oath", color: "#f0607a" },
-  { id: "duskrose", name: "Duskrose", color: "#b48cff" },
-];
+export const IMAGE_MODELS: ImageModel[] = CATALOG.map(({ id, name, color }) => ({ id, name, color }));
 
 export const modelById = (id: string, list = IMAGE_MODELS) => list.find((m) => m.id === id);
 export const modelName = (id: string, list = IMAGE_MODELS) => modelById(id, list)?.name ?? id;
@@ -32,22 +30,8 @@ export const FRAME_CHOICES = [1, 2, 3, 4] as const;
 export const COLLECTION_CHOICES = [1, 2, 3] as const;
 export const VARIATION_CHOICES = [1, 2, 4] as const;
 
-/**
- * Auto Mix: contiguous blocks in registry order; the first models get the remainder.
- *   2 models: 1 → C · 2 → C D · 3 → C C D · 4 → C C D D (the familiar 2 + 2)
- *   3 models: 4 → A A B C
- * With fewer frames than models, the last models are simply not used.
- */
-export function autoMix(frames: number, models: readonly string[] = IMAGE_MODELS.map((m) => m.id)): string[] {
-  if (!models.length) return [];
-  const base = Math.floor(frames / models.length);
-  const extra = frames % models.length;
-  const out: string[] = [];
-  models.forEach((m, i) => {
-    for (let k = 0; k < base + (i < extra ? 1 : 0); k++) out.push(m);
-  });
-  return out;
-}
+/** Auto Mix lives in the shared catalog (src/imageModels.ts) so the UI and the engine cannot diverge. */
+export { autoMix };
 
 /** Model per scene (index 0 = Scene 01) for the chosen mode. `custom` holds the user's per-scene picks. */
 export function assignModels(mode: ModelMode, frames: number, custom: readonly string[] = [], models = IMAGE_MODELS): string[] {

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import type { CodexSelection } from "./codexModels.ts";
 import { compositionPrompt, type Composition } from "./composition.ts";
+import { MAX_FRAMES, MODEL_IDS, autoMix } from "./imageModels.ts";
 import { validateBatch, validatePlan, type PromptPlan } from "./promptPlan.ts";
 
 export class CodexError extends Error {}
@@ -25,12 +26,13 @@ export async function loadInstructions(path = INSTRUCTIONS_PATH): Promise<string
   return text.trim();
 }
 
-/** instructions + the request. count = 1: a single Prompt Plan; count > 1: a Batch Plan {collections: PromptPlan[]} in the same call. */
-export function planPrompt(instructions: string, theme?: string, avoid: string[] = [], count = 1, composition?: Composition): string {
-  const batch = count > 1;
+/** instructions + the request. Format: Prompt Plan, or a Batch Plan {collections: PromptPlan[]} when `asBatch` (default: count > 1; generateBatch always passes true, also for one collection). */
+export function planPrompt(instructions: string, theme?: string, avoid: string[] = [], count = 1, composition?: Composition, models?: readonly string[], asBatch = count > 1): string {
+  const batch = asBatch; // response format: Batch Plan {collections: [...]} even when count = 1 (generateBatch)
+  const several = count > 1;
   const themeLine = theme
-    ? `Theme requested by the user (use it as the starting point${batch ? " for all collections, but give each its own distinct angle" : ""}): ${JSON.stringify(theme)}`
-    : batch
+    ? `Theme requested by the user (use it as the starting point${several ? " for all collections, but give each its own distinct angle" : ""}): ${JSON.stringify(theme)}`
+    : several
       ? `No theme is given: invent ${count} original concepts yourself.`
       : "No theme is given: invent ONE original concept yourself.";
   const avoidLine = avoid.length
@@ -40,7 +42,7 @@ Collections already created (do NOT repeat or resemble them; propose a substanti
   const ask = batch
     ? `Return a Batch Plan: JSON {"collections": [...]} with exactly ${count} Prompt Plans matching the supplied schema.`
     : "Return a Prompt Plan as JSON matching the supplied schema.";
-  const distinct = batch
+  const distinct = several
     ? `
 The ${count} collections must be substantially different from each other (concept, heroine, outfit, palette, setting, mood). Never repeat a concept inside the batch.`
     : "";
@@ -48,7 +50,29 @@ The ${count} collections must be substantially different from each other (concep
 
 ---
 Task: ${themeLine}
-${ask}${avoidLine}${distinct}${compositionPrompt(composition)}`;
+${ask}${avoidLine}${distinct}${framesPrompt(models)}${compositionPrompt(composition, models?.length)}`;
+}
+
+/** Plan v3 block: frame count, the server-assigned model per frame and the Russian interface fields. "" when `models` is not given. */
+export function framesPrompt(models?: readonly string[]): string {
+  if (!models) return "";
+  const list = models.map((m, i) => `- Frame ${i + 1}: ${m}`).join("\n");
+  const single = models.length === 1 ? "\nThis is a single-frame collection: make the one image the most expressive, self-contained composition of the concept, not the first shot of a series." : "";
+  return `
+
+Each collection has exactly ${models.length} frame${models.length === 1 ? "" : "s"}. The image model of each frame is assigned by the system; put exactly this id in the frame's "model" field and do not choose models yourself:
+${list}${single}
+Also fill the Russian interface fields: concept.titleRu, concept.descriptionRu and every frame's summaryRu are natural Russian versions of the English title, description and shot brief (not word for word). Positive prompts stay English.`;
+}
+
+/** JSON schema of one Prompt Plan with exactly models.length frames (derived from schemas/prompt-plan.schema.json). */
+export async function planSchema(models: readonly string[] = autoMix(MAX_FRAMES), planSchemaPath = SCHEMA): Promise<object> {
+  const schema = JSON.parse(await readFile(planSchemaPath, "utf8"));
+  const frames = schema.properties.frames;
+  frames.minItems = frames.maxItems = models.length;
+  frames.items.properties.frame.maximum = models.length;
+  frames.items.properties.model.enum = MODEL_IDS.filter((id) => models.includes(id));
+  return schema;
 }
 
 /** Finds how to launch Codex without a shell. On Windows the PATH shim is a .cmd file, so run its JS entry with node. */
@@ -81,6 +105,8 @@ export interface CodexOptions {
   theme?: string;
   /** Titles of recent collections the new concept(s) must differ from. */
   avoid?: string[];
+  /** Model per frame, assigned by the server (NS-014); its length is the frame count. Default: Auto Mix of 4 frames (2 + 2). */
+  models?: readonly string[];
   /** Optional user composition requirements per scene number (NS-011). */
   composition?: Composition;
   /** Explicit user choice (NS-012). Unset = Codex settings / CODEX_MODEL as before. */
@@ -167,15 +193,15 @@ const timeout = (o: CodexOptions, count: number) => o.timeoutMs ?? Number(proces
 
 /** One Codex call, one collection. */
 export async function generatePlan(opts: CodexOptions = {}): Promise<CodexResult> {
-  const schema = JSON.parse(await readFile(SCHEMA, "utf8"));
+  const models = opts.models ?? autoMix(MAX_FRAMES);
   const instructions = await loadInstructions();
-  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid), schema, timeout(opts, 1), opts.launcher, selection(opts));
-  return { plan: validatePlan(r.json), raw: r.raw, ms: r.ms, tokens: r.tokens };
+  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, 1, opts.composition, models), await planSchema(models), timeout(opts, 1), opts.launcher, selection(opts));
+  return { plan: validatePlan(r.json, { models }), raw: r.raw, ms: r.ms, tokens: r.tokens };
 }
 
-/** JSON schema for a Batch Plan of exactly `count` Prompt Plans (derived from schemas/prompt-plan.schema.json). */
-export async function batchSchema(count: number, planSchemaPath = SCHEMA): Promise<object> {
-  const plan = JSON.parse(await readFile(planSchemaPath, "utf8"));
+/** JSON schema for a Batch Plan of exactly `count` Prompt Plans; `models` fixes the frames (default: the file as is, 1-4 frames). */
+export async function batchSchema(count: number, planSchemaPath = SCHEMA, models?: readonly string[]): Promise<object> {
+  const plan = models ? await planSchema(models, planSchemaPath) : JSON.parse(await readFile(planSchemaPath, "utf8"));
   return {
     type: "object",
     additionalProperties: false,
@@ -186,9 +212,10 @@ export async function batchSchema(count: number, planSchemaPath = SCHEMA): Promi
 
 /** One Codex call for the whole batch; all plans are validated before anything is returned. */
 export async function generateBatch(opts: BatchOptions): Promise<BatchResult> {
+  const models = opts.models ?? autoMix(MAX_FRAMES);
   const instructions = await loadInstructions();
-  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count, opts.composition), await batchSchema(opts.count), timeout(opts, opts.count), opts.launcher, selection(opts));
-  return { plans: validateBatch(r.json, opts.count), raw: r.raw, ms: r.ms, tokens: r.tokens };
+  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count, opts.composition, models, true), await batchSchema(opts.count, SCHEMA, models), timeout(opts, opts.count), opts.launcher, selection(opts));
+  return { plans: validateBatch(r.json, opts.count, { models }), raw: r.raw, ms: r.ms, tokens: r.tokens };
 }
 
 /** Reads token usage from `codex exec --json` events (turn.completed). */

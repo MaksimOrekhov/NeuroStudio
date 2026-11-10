@@ -1,6 +1,8 @@
 import { randomInt, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { modelIndex, type ImageModelAssignment } from "./imageModels.ts";
+import type { Resolved } from "./composition.ts";
 import { ComfyUnavailableError, MODELS, applyParams, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
 import type { PromptPlan } from "./promptPlan.ts";
 
@@ -12,7 +14,7 @@ export interface Job {
   variant: number;
   /** File base name: scene-01 (single variation, legacy) or scene-01-v02. */
   file: string;
-  model: keyof typeof MODELS;
+  model: PromptPlan["frames"][number]["model"];
   seed: number;
   summary: string;
   graph: Graph;
@@ -21,7 +23,7 @@ export interface Job {
 const pad = (n: number) => String(n).padStart(2, "0");
 
 /**
- * Builds 4 x variations jobs (variations = 1 keeps the legacy scene-NN names). Every variant of a frame uses
+ * Builds frames x variations jobs (variations = 1 keeps the legacy scene-NN names). Every variant of a frame uses
  * the same prompts and settings; only the seed differs, and all seeds are unique. Execution order groups
  * frames by model (fewer checkpoint reloads); frame numbers stay those of the plan.
  */
@@ -44,7 +46,7 @@ export function buildJobs(plan: PromptPlan, base: Graph, slug: string, variation
       jobs.push({ frame: f.frame, variant, file, model: f.model, seed, summary: f.summary, graph });
     }
   }
-  return jobs.sort((a, b) => (a.model === b.model ? a.frame - b.frame || a.variant - b.variant : a.model === "crimson-oath" ? -1 : 1));
+  return jobs.sort((a, b) => (a.model === b.model ? a.frame - b.frame || a.variant - b.variant : modelIndex(a.model) - modelIndex(b.model)));
 }
 
 export function slugify(title: string): string {
@@ -65,6 +67,13 @@ export interface FrameRecord {
   error?: string;
 }
 
+export interface Generation {
+  theme: string | null;
+  imageModels: ImageModelAssignment;
+  /** Final per-frame composition requirements after inheritance (Auto fields absent); null = none given. */
+  composition: Resolved | null;
+}
+
 export interface Manifest {
   title: string;
   createdAt: string;
@@ -75,6 +84,10 @@ export interface Manifest {
   comfySeconds?: number;
   /** Seed variants per frame (absent in older collections: 1). */
   variations?: number;
+  /** Frames in the collection (absent in collections made before NS-014: 4). */
+  frameCount?: number;
+  /** What this collection was generated with (NS-014). Absent in older collections. The Prompt Plan itself is not duplicated here. */
+  generation?: Generation;
   frames: FrameRecord[];
 }
 
@@ -90,6 +103,7 @@ export async function runCollection(opts: {
   dir: string;
   client: Client;
   codex?: Manifest["codex"];
+  generation?: Generation;
   frameTimeoutMs?: number;
   log?: (s: string) => void;
   /** Called after every manifest save (progress for UIs). */
@@ -108,6 +122,8 @@ export async function runCollection(opts: {
     dir,
     codex: opts.codex,
     variations: Math.max(1, ...jobs.map((j) => j.variant)),
+    frameCount: plan.frames.length,
+    generation: opts.generation,
     frames: jobs.map((j) => ({ frame: j.frame, variant: j.variant, model: j.model, seed: j.seed, status: "pending" })),
   };
   const save = async () => {

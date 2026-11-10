@@ -10,9 +10,11 @@ export class ExportError extends Error {
   ) {
     super(message);
   }
+  /** Stable code for API clients (src/errors.ts). */
+  readonly code = "EXPORT_INCOMPLETE";
 }
 
-/** Validated list of the 4 files to put in the archive, or an ExportError. Reads nothing but file metadata. */
+/** Validated list of the files (one per frame) to put in the archive, or an ExportError. Reads nothing but file metadata. */
 export async function planExport(dir: string, c: CollectionView): Promise<{ name: string; path: string }[]> {
   const st = exportStatus(c);
   if (!st.ready) throw new ExportError(st.message ?? "Export is not available", 409);
