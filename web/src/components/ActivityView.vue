@@ -13,6 +13,7 @@ const state = computed(() => r.value?.status ?? "idle");
 const pct = computed(() => (r.value?.total ? Math.round((r.value.done / r.value.total) * 100) : 0));
 /** The history record of the current run (same id): the only source of Codex settings after a page reload. */
 const record = computed(() => app.runs.find((x) => x.id === r.value?.runId));
+const regen = computed(() => r.value?.regeneration);
 const perCollection = computed(() => (r.value ? r.value.frames * r.value.variations : 0));
 
 const titleFor = (id: string, fallback?: string) => {
@@ -27,6 +28,17 @@ const steps = computed<{ label: string; detail: string; state: StepState }[]>(()
   const x = r.value;
   const genDone = s === "completed";
   const genFailed = s === "failed" && !planFailed.value;
+  if (x?.regeneration) {
+    const g = x.regeneration;
+    return [
+      { label: "Проверка ComfyUI", detail: comfyOk.value ? "Доступен" : "Недоступен сейчас", state: comfyOk.value || s !== "idle" ? "done" : "failed" },
+      {
+        label: "Создание нового варианта",
+        detail: `Кадр ${String(g.frame).padStart(2, "0")} · вариант ${String(g.variant).padStart(2, "0")} из варианта ${String(g.sourceVariant).padStart(2, "0")} · Codex не используется`,
+        state: s === "generating" ? "active" : genFailed ? "failed" : "done",
+      },
+    ];
+  }
   return [
     { label: "Проверка ComfyUI", detail: comfyOk.value ? "Доступен" : "Недоступен сейчас", state: comfyOk.value || s !== "idle" ? "done" : "failed" },
     {
@@ -46,7 +58,7 @@ const steps = computed<{ label: string; detail: string; state: StepState }[]>(()
   ];
 });
 
-const title = computed(() => ({ planning: "Codex составляет план", generating: "Идёт генерация изображений", completed: "Генерация завершена", failed: "Генерация остановлена", idle: "Сейчас ничего не генерируется" })[state.value]);
+const title = computed(() => (regen.value ? ({ generating: "Перегенерируется один кадр", completed: "Перегенерация завершена", failed: "Перегенерация остановлена", planning: "", idle: "Сейчас ничего не генерируется" } as Record<string, string>)[state.value] : undefined) ?? ({ planning: "Codex составляет план", generating: "Идёт генерация изображений", completed: "Генерация завершена", failed: "Генерация остановлена", idle: "Сейчас ничего не генерируется" })[state.value]);
 
 interface Item {
   id?: string;
@@ -65,7 +77,7 @@ const ITEM: Record<Item["status"], { text: string; cls: string }> = {
 /** Collections of the current run, from the server state only: finished ids, the current one and the rest. */
 const items = computed<Item[]>(() => {
   const x = r.value;
-  if (!x || state.value === "idle") return [];
+  if (!x || state.value === "idle" || x.regeneration) return [];
   const per = perCollection.value;
   const failed = state.value === "failed";
   return Array.from({ length: x.collections }, (_, i) => {
@@ -144,7 +156,11 @@ const modelsLine = (m: RunRecord["imageModels"]) => (m ? (m.mode === "auto" ? "�
 
           <div v-if="state === 'failed'" class="stop">
             <ErrorNote :error="runError" />
-            <p class="fx muted">
+            <p v-if="regen" class="fx muted">
+              Новый вариант не создан; остальные изображения не затронуты. Ничего не отправляется повторно автоматически. Если ComfyUI успел принять задачу, её prompt_id указан в «Seed и prompt_id» коллекции.
+              <button class="link" @click="go('library', regen.collectionId)">Открыть коллекцию</button>
+            </p>
+            <p v-else class="fx muted">
               <template v-if="planFailed">Ни одно изображение не создавалось.</template>
               <template v-else-if="saved">
                 Сохранено: {{ nPlural(saved, ["полная коллекция", "полные коллекции", "полных коллекций"]) }}<template v-if="partial">, а также {{ partial.done }} из {{ ofImages(partial.total) }} коллекции «{{ partial.title }}»</template>.
@@ -156,6 +172,7 @@ const modelsLine = (m: RunRecord["imageModels"]) => (m ? (m.mode === "auto" ? "�
             <p v-if="!comfyOk" class="fx muted">ComfyUI сейчас недоступен. Изображение, которое ComfyUI уже принял, может всё же завершиться там — его prompt_id указан в коллекции.</p>
           </div>
 
+          <div v-if="regen && state !== 'failed'" class="row"><button class="btn sm" @click="go('library', regen.collectionId)">Открыть коллекцию</button></div>
           <div class="items">
             <div v-for="(it, i) in items" :key="i" class="item">
               <span class="idx">{{ i + 1 }}</span>

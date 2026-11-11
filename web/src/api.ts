@@ -16,6 +16,10 @@ export interface Frame {
   promptId?: string;
   image?: string;
   error?: string;
+  /** Set on variants made by targeted regeneration (NS-017): the variant they were created from. */
+  sourceVariant?: number;
+  /** The prompt was edited before regenerating. */
+  promptEdited?: boolean;
 }
 
 export interface Feedback {
@@ -74,6 +78,8 @@ export interface RunState {
   imageModels?: ImageModelAssignment;
   runId?: string;
   currentFrame?: number;
+  /** Present while/after a targeted regeneration of one image (same lock and state as a run). */
+  regeneration?: { collectionId: string; frame: number; variant: number; sourceVariant: number };
   finished: string[];
   error?: string;
   errorCode?: ErrorCode;
@@ -162,6 +168,15 @@ export const selectBest = (id: string, frame: number, variant: number | null) =>
   json<{ selections: Record<string, number>; export: ExportStatus }>(`/api/collections/${encodeURIComponent(id)}/selection`, put({ frame, variant }));
 export const saveFeedback = (id: string, fb: { rating: number | null; tags: string[]; note: string }) =>
   json<{ feedback: Feedback | null }>(`/api/collections/${encodeURIComponent(id)}/feedback`, put(fb));
+
+export type VariantPrompt =
+  | { frame: number; variant: number; available: true; model: string; positive: string; promptEdited: boolean }
+  | { frame: number; variant: number; available: false; code: ErrorCode; reason: string };
+const base = (id: string) => `/api/collections/${encodeURIComponent(id)}`;
+export const getVariantPrompt = (id: string, frame: number, variant: number) => json<VariantPrompt>(`${base(id)}/frames/${frame}/variants/${variant}/prompt`);
+/** One new variant of one frame; `positive` only when the user edited the prompt. */
+export const startRegeneration = (id: string, frame: number, req: { sourceVariant: number; positive?: string }) =>
+  json<RunState>(`${base(id)}/frames/${frame}/regenerate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });
 
 export interface CodexModels {
   source: "cache" | "bundled" | "none";

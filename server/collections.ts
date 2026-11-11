@@ -16,6 +16,10 @@ export interface FrameView {
   promptId?: string;
   image?: string; // file name, served by /api/collections/:id/images/:file
   error?: string;
+  /** NS-017: variant this one was regenerated from (absent for the original variants). */
+  sourceVariant?: number;
+  /** NS-017: the prompt was edited before regenerating. */
+  promptEdited?: boolean;
 }
 
 export interface CollectionView {
@@ -157,9 +161,21 @@ export async function readCollection(dir: string, id: string, activeId?: string)
         promptId: f.promptId,
         image: f.status === "done" ? f.png : undefined,
         error: f.error,
+        sourceVariant: f.sourceVariant,
+        promptEdited: f.promptEdited,
       }))
       .sort((a, b) => a.frame - b.frame || a.variant - b.variant);
     const status = m.status === "running" && id !== activeId ? "interrupted" : m.status;
+    // A regeneration slot of a finished collection that is still pending/submitted while nothing is running for it: the server
+    // stopped before the result was saved. It is shown as failed (prompt_id kept) and is never resubmitted.
+    if (m.status !== "running" && id !== activeId) {
+      for (const f of frames) {
+        if (f.sourceVariant !== undefined && (f.status === "pending" || f.status === "submitted")) {
+          f.status = f.status === "submitted" ? "timeout" : "failed"; // accepted by ComfyUI: outcome unknown
+          f.error = "Regeneration was interrupted before the image was saved; it is not resubmitted automatically";
+        }
+      }
+    }
     const selections = await readSelections(dir, id);
     const view: CollectionView = {
       id,

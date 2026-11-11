@@ -13,7 +13,9 @@ export const ERROR_CODES = [
   "GENERATION_FAILED", // run failed while generating images (ComfyUI error, timeout, missing dependency)
   "EXPORT_INCOMPLETE", // 409: ZIP not ready
   "COLLECTION_NOT_FOUND", // 404
-  "INVALID_REQUEST", // 400: bad selection / feedback body
+  "INVALID_REQUEST", // 400: bad selection / feedback / regeneration body
+  "SOURCE_UNAVAILABLE", // 409: regeneration source variant (image, saved graph) is missing, unfinished or damaged
+  "VARIANT_LIMIT", // 409: the frame already has the maximum number of variants (-v99)
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 

@@ -10,5 +10,7 @@ export const ERROR_CODES = [
   "EXPORT_INCOMPLETE",
   "COLLECTION_NOT_FOUND",
   "INVALID_REQUEST",
+  "SOURCE_UNAVAILABLE",
+  "VARIANT_LIMIT",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
