@@ -526,21 +526,25 @@ test("export ZIP for 1, 2, 3 and 4 frames: one original PNG per frame, frame ord
   }
 });
 
-test("one frame, one variant is ready at once; several variants need Best; export errors carry EXPORT_INCOMPLETE", async () => {
+test("one frame, one variant needs an explicit Best too; export errors carry EXPORT_INCOMPLETE", async () => {
   const { app, dir, get } = await setup();
   await disk(dir, "single", 1, 1, 1);
+  assert.equal((await get("/api/collections/single")).export.ready, false);
+  assert.equal((await app.inject({ method: "GET", url: "/api/collections/single/export", headers: H })).statusCode, 409);
+  await writeFile(join(dir, "single", "selections.json"), JSON.stringify({ "1": 1 }));
   const one = await get("/api/collections/single");
   assert.deepEqual(one.export, { ready: true, resolved: 1 });
   const ok = await app.inject({ method: "GET", url: "/api/collections/single/export", headers: H });
   assert.deepEqual(readZip(ok.rawPayload).map((z) => z.name), ["scene-01.png"]);
   await disk(dir, "pick", 2, 4, 2, { "1": 3 });
   const pick = await get("/api/collections/pick");
-  assert.equal(pick.export.ready, false);
-  assert.equal(pick.export.resolved, 1);
+  assert.deepEqual(pick.export, { ready: true, resolved: 1 }); // only the selected frame is exported
   const res = await app.inject({ method: "GET", url: "/api/collections/pick/export", headers: H });
-  assert.equal(res.statusCode, 409);
-  assert.equal(res.json().code, "EXPORT_INCOMPLETE");
-  assert.match(res.json().error, /Select best images: 1\/2/);
+  assert.deepEqual(readZip(res.rawPayload).map((z) => z.name), ["scene-01.png"]);
+  await disk(dir, "nopick", 2, 4, 2);
+  const np = await app.inject({ method: "GET", url: "/api/collections/nopick/export", headers: H });
+  assert.equal(np.statusCode, 409);
+  assert.equal(np.json().code, "EXPORT_INCOMPLETE");
   assert.equal((await app.inject({ method: "GET", url: "/api/collections/none/export", headers: H })).json().code, "COLLECTION_NOT_FOUND");
 });
 
@@ -561,7 +565,7 @@ test("selection is limited by the collection's frame count; Feedback is untouche
 
 test("old collections: no frameCount means 4 frames; nothing is rewritten; old four-frame ZIP works as before", async () => {
   const { app, dir, get } = await setup();
-  await disk(dir, "legacy", 4, 1, undefined);
+  await disk(dir, "legacy", 4, 1, undefined, { "1": 1, "2": 1, "3": 1, "4": 1 });
   const before = await readFile(join(dir, "legacy", "collection.json"), "utf8");
   const c = await get("/api/collections/legacy");
   assert.equal(c.frameCount, 4);

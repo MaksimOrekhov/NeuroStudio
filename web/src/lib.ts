@@ -32,14 +32,14 @@ export function finalOf(c: Collection, s: Scene): Frame | undefined {
   return s.variants.length === 1 && s.variants[0].image ? s.variants[0] : undefined;
 }
 
-/** Readiness comes from the server (`export.ready`); this only words the reason in Russian. */
+/** Readiness comes from the server (`export.ready`, `export.resolved` = explicitly selected Best images); this only words it in Russian. */
 export function exportInfo(c: Collection): { ready: boolean; resolved: number; total: number; message: string } {
   const total = c.frameCount;
   const resolved = c.export.resolved;
-  if (c.export.ready) return { ready: true, resolved, total, message: `${nPlural(total, W.frame)} · исходные PNG` };
-  const missing = scenesOf(c).filter((s) => !s.variants.some((v) => v.image)).length;
-  if (missing) return { ready: false, resolved, total, message: `Нет готового изображения: ${nPlural(missing, W.frame)}` };
-  return { ready: false, resolved, total, message: `Выберите лучшие: ${resolved}/${total}` };
+  if (c.export.ready) return { ready: true, resolved, total, message: `Выбрано: ${resolved} из ${total} · исходные PNG` };
+  if (resolved > 0) return { ready: false, resolved, total, message: "Выбранное изображение недоступно на диске" };
+  if (!c.frames.some((f) => f.image)) return { ready: false, resolved, total, message: "Нет готового изображения: нечего выбирать" };
+  return { ready: false, resolved, total, message: "Выберите хотя бы одно изображение." };
 }
 
 export type Badge = { text: string; cls: "ok" | "run" | "warn" | "bad" };

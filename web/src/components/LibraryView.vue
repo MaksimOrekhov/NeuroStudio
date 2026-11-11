@@ -96,10 +96,9 @@ const stateText = (status: string | undefined, running: boolean) =>
         </div>
         <div class="exp">
           <template v-if="c.status === 'running'"><span class="muted">Идёт генерация…</span></template>
-          <template v-else-if="c.export.ready"><span class="okline">✓ Готово к экспорту</span></template>
+          <template v-else-if="c.export.ready"><span class="okline">✓ Выбрано для экспорта: {{ c.export.resolved }}</span></template>
           <template v-else-if="c.status === 'done'">
-            <span>Выбрано лучших: {{ exportInfo(c).resolved }}/{{ exportInfo(c).total }}</span>
-            <span class="bar mini"><span :style="{ width: (exportInfo(c).resolved / exportInfo(c).total) * 100 + '%' }" /></span>
+            <span class="muted">{{ exportInfo(c).message }}</span>
           </template>
           <template v-else><span class="muted">Сохранено {{ c.doneFrames }} из {{ ofImages(c.frames.length) }}</span></template>
         </div>
