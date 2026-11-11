@@ -126,3 +126,7 @@ export const secondsRu = (s?: number) => (s === undefined ? "—" : s >= 60 ? `$
 
 /** After "из": genitive — "из 1 изображения", "из 4 изображений", "из 21 изображения". */
 export const ofImages = (n: number) => `${n} ${n % 10 === 1 && n % 100 !== 11 ? "изображения" : "изображений"}`;
+
+/** Russian tag names for the Preference Memory view (NS-020): per-image tags and whole-collection tags are separate vocabularies. */
+export const IMAGE_TAG_RU: Record<string, string> = Object.fromEntries([...IMAGE_GOOD_TAGS, ...IMAGE_BAD_TAGS]);
+export const COLLECTION_TAG_RU: Record<string, string> = Object.fromEntries([...GOOD_TAGS, ...BAD_TAGS]);

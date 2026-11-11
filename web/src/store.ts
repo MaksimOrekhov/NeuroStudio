@@ -7,6 +7,7 @@ import {
   getCodexModels,
   getCollection,
   getCollections,
+  getEvolutionPreview,
   getComparisons,
   saveComparison,
   getRuns,
@@ -21,6 +22,7 @@ import {
   type CodexModels,
   type Collection,
   type Comparison,
+  type EvolutionPreview,
   type Feedback,
   type ImageFeedback,
   type RunRecord,
@@ -261,6 +263,35 @@ function restoreCodexChoice() {
   }
 }
 restoreCodexChoice();
+
+// Prompt Evolution switch (NS-020): off until the user turns it on; the choice is remembered locally.
+const EVOLUTION_KEY = "neurostudio.promptEvolution";
+form.promptEvolution = store.get(EVOLUTION_KEY) === "1";
+watch(
+  () => form.promptEvolution,
+  (on) => store.set(EVOLUTION_KEY, on ? "1" : "0"),
+);
+
+/** Read-only look at what would be sent to Codex (GET /api/prompt-evolution/preview; no Codex is started). */
+export const evolution = reactive({ open: false, loading: false, data: null as EvolutionPreview | null, error: null as UiError | null });
+let evolutionSeq = 0;
+export async function loadEvolutionPreview(): Promise<void> {
+  const seq = ++evolutionSeq;
+  evolution.loading = true;
+  evolution.error = null;
+  try {
+    const d = await getEvolutionPreview();
+    if (seq === evolutionSeq) evolution.data = d;
+  } catch (e) {
+    if (seq === evolutionSeq) evolution.error = describeError(e);
+  } finally {
+    if (seq === evolutionSeq) evolution.loading = false;
+  }
+}
+export function toggleEvolutionPreview() {
+  evolution.open = !evolution.open;
+  if (evolution.open) void loadEvolutionPreview();
+}
 
 export const codexModels = computed(() => app.codex?.models ?? []);
 /** With a chosen model: its efforts. With the default model only efforts every listed model supports. */

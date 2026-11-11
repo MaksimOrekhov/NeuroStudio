@@ -97,6 +97,8 @@ export interface RunState {
   imageModels?: ImageModelAssignment;
   runId?: string;
   currentFrame?: number;
+  /** NS-020: what Prompt Evolution did for this run. */
+  evolution?: { enabled: boolean; applied: boolean; reason?: string; error?: string };
   /** Present while/after a targeted regeneration of one image (same lock and state as a run). */
   regeneration?: { collectionId: string; frame: number; variant: number; sourceVariant: number };
   finished: string[];
@@ -175,6 +177,8 @@ export interface StartRequest {
   composition?: Composition;
   codexModel?: string;
   codexReasoningEffort?: string;
+  /** NS-020: add the Preference Memory to the Codex request (sent only when switched on). */
+  promptEvolution?: boolean;
 }
 export const startRun = (req: StartRequest) =>
   json<RunState>("/api/autopilot/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });
@@ -210,3 +214,27 @@ export const saveImageFeedback = (id: string, frame: number, variant: number, fb
 export const getComparisons = (id: string) => json<{ comparisons: Record<string, Comparison> }>(`/api/collections/${encodeURIComponent(id)}/comparisons`);
 export const saveComparison = (id: string, frame: number, body: { variantA: number; variantB: number; winnerVariant: number | null }) =>
   json<{ comparison: Comparison }>(`/api/collections/${encodeURIComponent(id)}/frames/${frame}/comparisons`, put(body));
+
+/** GET /api/prompt-evolution/preview (NS-020): mirrors server/promptEvolution.ts. */
+export interface TagStat {
+  tag: string;
+  count: number;
+  collections: number;
+  confidence: "stable" | "low" | "mixed";
+}
+export interface EvolutionPreview {
+  memory: {
+    status: "empty" | "low" | "ready";
+    sample: { collections: number; collectionsWithSignals: number; ratedImages: number; bestImages: number; comparisons: number; comparedImages: number; ratedCollections: number };
+    evidence: { likes: number; dislikes: number; best: number; arenaPreferred: number; arenaLessPreferred: number };
+    positive: TagStat[];
+    negative: TagStat[];
+    collection: { positive: TagStat[]; negative: TagStat[] };
+    models: Record<string, { ratedImages: number; likes: number; dislikes: number; best: number; positive: TagStat[]; negative: TagStat[] }>;
+    warnings: { collectionId: string; source: string; message: string }[];
+  };
+  text: string;
+  chars: number;
+  applied: boolean;
+}
+export const getEvolutionPreview = () => json<EvolutionPreview>("/api/prompt-evolution/preview");

@@ -36,6 +36,9 @@ interface Spec {
   status?: "done" | "failed" | "running";
   selections?: Record<string, number>;
   feedback?: { rating: number | null; tags: string[]; note: string };
+  /** NS-018 / NS-019 test data for the Prompt Evolution preview */
+  imageFeedback?: Record<string, { verdict: "like" | "dislike"; tags: string[] }>;
+  comparisons?: { frame: number; a: number; b: number; winner: number | null }[];
   createdAt: string;
   plan?: boolean;
   generation?: boolean;
@@ -94,6 +97,8 @@ async function writeCollection(dir: string, s: Spec) {
     await writeFile(join(d, "prompt-plan.json"), JSON.stringify(s.titleRu ? plan : legacyPlan(plan)));
   }
   if (s.selections) await writeFile(join(d, "selections.json"), JSON.stringify(s.selections));
+  if (s.imageFeedback) await writeFile(join(d, "image-feedback.json"), JSON.stringify({ version: 1, images: Object.fromEntries(Object.entries(s.imageFeedback).map(([k, v]) => [k, { ...v, updatedAt: "2026-11-10T10:00:00Z" }])) }));
+  if (s.comparisons) await writeFile(join(d, "comparisons.json"), JSON.stringify({ version: 1, comparisons: Object.fromEntries(s.comparisons.map((x) => [`${x.frame}:${x.a}-${x.b}`, { frame: x.frame, variantA: x.a, variantB: x.b, winnerVariant: x.winner, updatedAt: "2026-11-10T10:00:00Z" }])) }));
   if (s.feedback) await writeFile(join(d, "feedback.json"), JSON.stringify({ version: 1, ...s.feedback, updatedAt: "2026-11-09T10:00:00Z" }));
 }
 
@@ -121,13 +126,13 @@ export async function createFixture(base?: string) {
   await mkdir(batchesDir, { recursive: true });
   const specs: Spec[] = [
     // 4 frames x 2 variants, Russian metadata, Best chosen for 2 of 4: "needs selection"
-    { id: "2026-11-10-ferry", title: "Morning Ferry", titleRu: "Утренний паром", hue: 200, frameCount: 4, variations: 2, models: [C, C, D, D], selections: { "1": 2, "3": 1 }, createdAt: "2026-11-10T09:30:00Z", generation: true },
+    { id: "2026-11-10-ferry", title: "Morning Ferry", titleRu: "Утренний паром", hue: 200, frameCount: 4, variations: 2, models: [C, C, D, D], selections: { "1": 2, "3": 1 }, imageFeedback: { "1-2": { verdict: "like", tags: ["great_outfit", "good_composition"] }, "3-1": { verdict: "like", tags: ["great_outfit"] }, "4-1": { verdict: "dislike", tags: ["anatomy"] } }, comparisons: [{ frame: 1, a: 1, b: 2, winner: 2 }], createdAt: "2026-11-10T09:30:00Z", generation: true },
     // one frame: ready at once
     { id: "2026-11-10-ovation", title: "A Private Ovation", titleRu: "Аплодисменты для себя", hue: 340, frameCount: 1, variations: 1, models: [C], createdAt: "2026-11-10T08:10:00Z", generation: true, feedback: { rating: 5, tags: ["great_outfit", "good_composition"], note: "Один кадр держит композицию." } },
     // two frames x 2, both Best chosen, rated
-    { id: "2026-11-09-library", title: "Noon in the Library", titleRu: "Полдень в библиотеке", hue: 40, frameCount: 2, variations: 2, models: [C, D], selections: { "1": 1, "2": 2 }, createdAt: "2026-11-09T15:00:00Z", generation: true, feedback: { rating: 4, tags: ["beautiful_lighting"], note: "" } },
+    { id: "2026-11-09-library", title: "Noon in the Library", titleRu: "Полдень в библиотеке", hue: 40, frameCount: 2, variations: 2, models: [C, D], selections: { "1": 1, "2": 2 }, imageFeedback: { "1-1": { verdict: "like", tags: ["great_outfit"] }, "2-2": { verdict: "dislike", tags: ["anatomy", "face"] } }, createdAt: "2026-11-09T15:00:00Z", generation: true, feedback: { rating: 4, tags: ["beautiful_lighting"], note: "" } },
     // three frames, one variant
-    { id: "2026-11-09-greenhouse", title: "Rain in the Greenhouse", titleRu: "Дождь в теплице", hue: 140, frameCount: 3, variations: 1, models: [C, C, D], createdAt: "2026-11-09T11:00:00Z", generation: true },
+    { id: "2026-11-09-greenhouse", title: "Rain in the Greenhouse", titleRu: "Дождь в теплице", hue: 140, frameCount: 3, variations: 1, models: [C, C, D], imageFeedback: { "3-1": { verdict: "dislike", tags: ["anatomy"] }, "1-1": { verdict: "like", tags: ["good_composition"] } }, createdAt: "2026-11-09T11:00:00Z", generation: true },
     // old collection: no frameCount, no generation, no Russian text, one variant
     { id: "2026-10-01-saltglass", title: "Saltglass Conservatory", hue: 260, variations: 1, models: [C, C, D, D], createdAt: "2026-10-01T12:00:00Z" },
     // stopped by an error: 2 of 4 saved, one failed

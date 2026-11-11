@@ -125,6 +125,7 @@ const modelsLine = (m: RunRecord["imageModels"]) => (m ? (m.mode === "auto" ? "�
               <span v-if="running" class="spinner" />
               {{ title }}
             </h1>
+            <p v-if="r?.evolution?.enabled" class="muted small">Prompt Evolution: {{ r.evolution.applied ? 'оценки учтены' : r.evolution.error ? 'не применён — анализ не удался, генерация идёт без него' : 'не применён — данных пока недостаточно' }}</p>
             <p v-if="r && state !== 'idle'" class="muted small">
               <template v-if="r.startedAt">Начата {{ dateRu(r.startedAt) }} · </template>{{ formula(r.collections, r.frames, r.variations) }}
             </p>
