@@ -1,7 +1,7 @@
 // NS-018: per-image like/dislike + reasons (image-feedback.json). No GPU, no Codex.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApp } from "../server/app.ts";
@@ -89,13 +89,74 @@ test("independent from Best, collection feedback and export; unrelated files are
   assert.equal(c.feedback.rating, 4);
 });
 
-test("a corrupt image-feedback.json reads as empty and is replaced by the next valid save; unknown entries are ignored", async () => {
+test("unknown single entries are ignored; a missing file is simply no feedback", async () => {
   const t = await setup();
-  await t.make("d", [{ frame: 1 }], { "image-feedback.json": "{broken" });
+  await t.make("d", [{ frame: 1 }]);
   assert.deepEqual((await t.get("d")).imageFeedback, {});
-  assert.equal((await t.put("d", 1, 1, { verdict: "like" })).statusCode, 200);
+  assert.equal((await t.get("d")).imageFeedbackError, undefined);
   await writeFile(fbFile(t, "d"), JSON.stringify({ version: 1, images: { "1-1": { verdict: "like", tags: ["face", "great_outfit"] }, "9-9": { verdict: "like" }, "1-2": { verdict: "meh" } } }));
   assert.deepEqual((await t.get("d")).imageFeedback, { "1-1": { verdict: "like", tags: ["great_outfit"], updatedAt: "" } });
+});
+
+test("an unreadable or corrupt image-feedback.json is never overwritten: save is refused (409), the file stays byte-identical, the view says so", async () => {
+  const t = await setup();
+  const bad = ["{broken", "", "[]", "{}", '{"images":[]}', '{"images":null}', "null", '{"version":1,"images":{"1-1":{"verdict":"like"}}'];
+  for (const [i, content] of bad.entries()) {
+    const id = `x${i}`;
+    await t.make(id, [{ frame: 1 }], { "image-feedback.json": content });
+    const c = await t.get(id);
+    assert.deepEqual(c.imageFeedback, {});
+    assert.ok(c.imageFeedbackError, content);
+    for (const body of [{ verdict: "like", tags: ["great_outfit"] }, { verdict: null }]) {
+      const r = await t.put(id, 1, 1, body);
+      assert.equal(r.statusCode, 409, content);
+      assert.equal(r.json().code, "FEEDBACK_FILE_UNREADABLE");
+    }
+    assert.equal(await readFile(fbFile(t, id), "utf8"), content); // byte-identical
+    assert.deepEqual((await readdir(join(t.dir, id))).filter((f) => f.endsWith(".tmp")), []);
+  }
+  // a read error other than ENOENT (here: a directory where the file should be) is also "unreadable", not "missing"
+  await t.make("dir", [{ frame: 1 }]);
+  await mkdir(fbFile(t, "dir"));
+  assert.ok((await t.get("dir")).imageFeedbackError);
+  assert.equal((await t.put("dir", 1, 1, { verdict: "like" })).statusCode, 409);
+  assert.ok((await stat(fbFile(t, "dir"))).isDirectory());
+  // once the user repairs the file, saving works again
+  await writeFile(fbFile(t, "x0"), JSON.stringify({ version: 1, images: {} }));
+  assert.equal((await t.put("x0", 1, 1, { verdict: "like" })).statusCode, 200);
+});
+
+test("removing the last rating: only ENOENT is ignored; EPERM is returned and the API never claims success while the file remains", async () => {
+  const t = await setup();
+  await t.make("r", [{ frame: 1 }, { frame: 2 }]);
+  await t.put("r", 1, 1, { verdict: "like" });
+  const before = await readFile(fbFile(t, "r"), "utf8");
+  const real = io.unlink;
+  io.unlink = async () => {
+    throw Object.assign(new Error("EPERM: injected"), { code: "EPERM" });
+  };
+  let res;
+  try {
+    res = await t.put("r", 1, 1, { verdict: null });
+  } finally {
+    io.unlink = real;
+  }
+  assert.equal(res.statusCode, 500);
+  assert.match(res.json().message, /EPERM/);
+  assert.equal(await readFile(fbFile(t, "r"), "utf8"), before); // still there, rating still shown
+  assert.equal((await t.get("r")).imageFeedback["1-1"].verdict, "like");
+  assert.equal((await t.put("r", 1, 1, { verdict: null })).statusCode, 200);
+  assert.ok(!(await readdir(join(t.dir, "r"))).includes("image-feedback.json"));
+  // the file vanished by itself (ENOENT): removing is still a success
+  await t.put("r", 2, 1, { verdict: "like" });
+  io.unlink = async () => {
+    throw Object.assign(new Error("ENOENT: injected"), { code: "ENOENT" });
+  };
+  try {
+    assert.equal((await t.put("r", 2, 1, { verdict: null })).statusCode, 200);
+  } finally {
+    io.unlink = real;
+  }
 });
 
 test("saves are atomic and serialised: a failing rename keeps the old file; parallel saves for different images are all kept", async () => {
@@ -146,9 +207,9 @@ test("UI store: like, tags, switching and clearing go through the API in click o
   const k = "1-2";
   const p = [S.toggleVerdict(c(), 1, 2, "dislike"), S.toggleImageTag(c(), 1, 2, "face")]; // queued without waiting
   await Promise.all(p);
-  assert.deepEqual(c().imageFeedback[k].tags, []); // the tag click ran before the verdict was known: nothing to tag yet
-  await S.toggleImageTag(c(), 1, 2, "face");
-  await S.toggleImageTag(c(), 1, 2, "anatomy");
+  assert.deepEqual(c().imageFeedback[k].tags, ["face"]); // queued clicks build on the previous answer
+  await Promise.all([S.toggleImageTag(c(), 1, 2, "anatomy"), S.toggleImageTag(c(), 1, 2, "outfit"), S.toggleImageTag(c(), 1, 2, "outfit")]); // quick consecutive clicks
+  assert.deepEqual(c().imageFeedback[k].tags, ["anatomy", "face"]);
   assert.deepEqual(c().imageFeedback[k].tags, ["anatomy", "face"]);
   await S.toggleVerdict(c(), 1, 2, "like"); // switching verdict drops the other kind of tags
   assert.deepEqual(c().imageFeedback[k], { ...c().imageFeedback[k], verdict: "like", tags: [] });

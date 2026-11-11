@@ -67,6 +67,8 @@ export interface Collection {
   feedback: Feedback | null;
   /** Quality verdict and reasons per image, keyed "frame-variant". */
   imageFeedback: Record<string, ImageFeedback>;
+  /** Set when image-feedback.json cannot be read: ratings cannot be saved. */
+  imageFeedbackError?: string;
   export: ExportStatus;
   codex?: { seconds?: number; tokens?: unknown; model?: string | null; reasoningEffort?: string | null };
   comfySeconds?: number;

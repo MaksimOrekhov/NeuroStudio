@@ -2,7 +2,7 @@ import { readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/prom
 import { join, resolve, sep } from "node:path";
 import type { Generation, Manifest } from "../src/collection.ts";
 import type { PromptPlan } from "../src/promptPlan.ts";
-import { writeAtomic } from "../src/regenerate.ts";
+import { io, writeAtomic } from "../src/regenerate.ts";
 
 export interface FrameView {
   frame: number;
@@ -47,6 +47,8 @@ export interface CollectionView {
   feedback: Feedback | null;
   /** NS-018: quality verdict and tags per image, keyed "frame-variant" (image-feedback.json); {} when none. */
   imageFeedback: Record<string, ImageFeedback>;
+  /** Set when image-feedback.json exists but cannot be understood: it is shown as empty and refused for writing, never overwritten. */
+  imageFeedbackError?: string;
   /** Whether the final images (one per frame) can be exported as a ZIP (see export.ts). */
   export: ExportStatus;
   codex?: Manifest["codex"];
@@ -143,19 +145,34 @@ async function readSelections(dir: string, id: string): Promise<Record<string, n
   }
 }
 
-async function readImageFeedback(dir: string, id: string): Promise<Record<string, ImageFeedback>> {
+/**
+ * Reads image-feedback.json strictly. A missing file (ENOENT) is "no feedback". Anything else that stops the file from being
+ * understood (read error, invalid JSON, wrong structure) is reported as `unreadable`, so that nothing ever overwrites it.
+ */
+async function loadImageFeedback(dir: string, id: string): Promise<{ images: Record<string, ImageFeedback>; unreadable: string | null }> {
+  let text: string;
   try {
-    const raw = JSON.parse(await readFile(join(dir, id, "image-feedback.json"), "utf8")) as { images?: Record<string, Partial<ImageFeedback>> };
-    const out: Record<string, ImageFeedback> = {};
-    for (const [k, v] of Object.entries(raw.images ?? {})) {
-      if (!/^[1-4]-\d{1,2}$/.test(k) || !v || (v.verdict !== "like" && v.verdict !== "dislike")) continue;
-      const allowed = IMAGE_TAGS[v.verdict] as readonly string[];
-      out[k] = { verdict: v.verdict, tags: Array.isArray(v.tags) ? v.tags.filter((t): t is string => allowed.includes(t as string)) : [], updatedAt: typeof v.updatedAt === "string" ? v.updatedAt : "" };
-    }
-    return out;
-  } catch {
-    return {}; // missing (old collection) or unreadable: behaves as "no image feedback"
+    text = await readFile(join(dir, id, "image-feedback.json"), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { images: {}, unreadable: null };
+    return { images: {}, unreadable: `cannot read image-feedback.json: ${(e as Error).message}` };
   }
+  let raw: { images?: unknown };
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    return { images: {}, unreadable: `image-feedback.json is not valid JSON: ${(e as Error).message}` };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw) || typeof raw.images !== "object" || raw.images === null || Array.isArray(raw.images)) {
+    return { images: {}, unreadable: "image-feedback.json has an unexpected structure" };
+  }
+  const out: Record<string, ImageFeedback> = {};
+  for (const [k, v] of Object.entries(raw.images as Record<string, Partial<ImageFeedback>>)) {
+    if (!/^[1-4]-\d{1,2}$/.test(k) || !v || (v.verdict !== "like" && v.verdict !== "dislike")) continue; // single unknown entries are ignored
+    const allowed = IMAGE_TAGS[v.verdict] as readonly string[];
+    out[k] = { verdict: v.verdict, tags: Array.isArray(v.tags) ? v.tags.filter((t): t is string => allowed.includes(t as string)) : [], updatedAt: typeof v.updatedAt === "string" ? v.updatedAt : "" };
+  }
+  return { images: out, unreadable: null };
 }
 
 async function readFeedback(dir: string, id: string): Promise<Feedback | null> {
@@ -223,6 +240,7 @@ export async function readCollection(dir: string, id: string, activeId?: string)
       }
     }
     const selections = await readSelections(dir, id);
+    const imageFb = await loadImageFeedback(dir, id);
     const view: CollectionView = {
       id,
       title: m.title,
@@ -238,7 +256,8 @@ export async function readCollection(dir: string, id: string, activeId?: string)
       generation: m.generation,
       selections,
       feedback: await readFeedback(dir, id),
-      imageFeedback: await readImageFeedback(dir, id),
+      imageFeedback: imageFb.images,
+      imageFeedbackError: imageFb.unreadable ?? undefined,
       export: { ready: false, resolved: 0 },
       codex: m.codex,
       comfySeconds: m.comfySeconds,
@@ -323,6 +342,8 @@ export async function setFeedback(dir: string, id: string, input: unknown): Prom
 }
 
 export class ImageFeedbackError extends Error {}
+/** image-feedback.json exists but is unreadable/corrupt: saving is refused so the file stays byte-identical. */
+export class ImageFeedbackFileError extends ImageFeedbackError {}
 
 const imageFeedbackLocks = new Map<string, Promise<unknown>>();
 
@@ -347,7 +368,9 @@ async function apply(dir: string, id: string, frame: unknown, variant: unknown, 
   const { verdict = null, tags = [] } = input as Record<string, unknown>;
   if (verdict !== null && verdict !== "like" && verdict !== "dislike") throw new ImageFeedbackError('verdict must be "like", "dislike" or null');
   if (!Array.isArray(tags)) throw new ImageFeedbackError("tags must be an array");
-  const all = { ...c.imageFeedback };
+  const cur = await loadImageFeedback(dir, id); // strict: never write over a file that could not be read
+  if (cur.unreadable) throw new ImageFeedbackFileError(cur.unreadable);
+  const all = { ...cur.images };
   const k = `${frame}-${variant}`;
   let entry: ImageFeedback | null = null;
   if (verdict === null) {
@@ -359,7 +382,12 @@ async function apply(dir: string, id: string, frame: unknown, variant: unknown, 
     all[k] = entry;
   }
   const file = join(dir, id, "image-feedback.json");
-  if (!Object.keys(all).length) await unlink(file).catch(() => undefined);
-  else await writeAtomic(file, JSON.stringify({ version: 1, images: all }, null, 2));
+  if (!Object.keys(all).length) {
+    try {
+      await io.unlink(file);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; // anything else: the file is still there, do not report success
+    }
+  } else await writeAtomic(file, JSON.stringify({ version: 1, images: all }, null, 2));
   return entry;
 }

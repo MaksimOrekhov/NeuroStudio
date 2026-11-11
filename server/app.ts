@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import Fastify, { type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { ComfyClient } from "../src/comfy.ts";
-import { FeedbackError, ImageFeedbackError, SelectionError, setImageFeedback, listCollections, readCollection, safeImagePath, setFeedback, setSelection } from "./collections.ts";
+import { FeedbackError, ImageFeedbackError, ImageFeedbackFileError, SelectionError, setImageFeedback, listCollections, readCollection, safeImagePath, setFeedback, setSelection } from "./collections.ts";
 import { ExportError, planExport, zipStream } from "./export.ts";
 import { getThumbnail } from "./thumbs.ts";
 import { parseComposition } from "../src/composition.ts";
@@ -178,6 +178,7 @@ export function buildApp(d: AppDeps) {
     try {
       return { frame: num(p.frame), variant: num(p.variant), feedback: await setImageFeedback(d.collectionsDir, p.id, num(p.frame), num(p.variant), req.body ?? {}) };
     } catch (e) {
+      if (e instanceof ImageFeedbackFileError) return fail(reply, 409, "FEEDBACK_FILE_UNREADABLE", e.message);
       if (e instanceof ImageFeedbackError) return e.message === "collection not found" ? fail(reply, 404, "COLLECTION_NOT_FOUND", e.message) : fail(reply, 400, "INVALID_REQUEST", e.message);
       throw e;
     }

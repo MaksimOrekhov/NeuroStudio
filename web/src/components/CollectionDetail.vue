@@ -97,6 +97,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
       </span>
     </div>
 
+    <p v-if="c.imageFeedbackError" class="note warn">Оценки изображений сейчас нельзя сохранить: файл image-feedback.json в папке коллекции повреждён или недоступен. Он не изменён.</p>
     <p v-if="imageFbError[c.id]" class="note bad">Не удалось сохранить оценку изображения: {{ imageFbError[c.id] }}</p>
     <p v-if="bestError[c.id]" class="note bad">Не удалось сохранить выбор: {{ bestError[c.id] }}</p>
 
