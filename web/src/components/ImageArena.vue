@@ -1,76 +1,33 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { getVariantPrompt, imageUrl, type VariantPrompt } from "../api";
-import { donePairs, openPairs, pairKey, statsOf, variantsOfFrame } from "../arena";
+import { variantsOfFrame } from "../arena";
+import { createArenaFlow } from "../arenaFlow";
 import { describeError } from "../errors";
 import { pad2, titleOf } from "../lib";
 import { modelById } from "../models";
-import { arena, loadArena, submitComparison } from "../store";
+import { arena } from "../store";
 import ErrorNote from "./ErrorNote.vue";
 
 const props = defineProps<{ c: import("../api").Collection; frame: number }>();
 const emit = defineEmits<{ close: [] }>();
 
 const variants = computed(() => variantsOfFrame(props.c, props.frame));
-const history = computed(() => arena.history);
-const open = computed(() => openPairs(variants.value, props.frame, history.value));
-const done = computed(() => donePairs(variants.value, props.frame, history.value));
-const stats = computed(() => statsOf(variants.value, props.frame, history.value));
-
-/** The pair on screen (a < b), whether the images are shown swapped, and the pairs skipped in this session (they stay open). */
-const current = ref<[number, number] | null>(null);
-const swapped = ref(false);
-const skipped = reactive(new Set<string>());
-const editing = ref(false);
+const flow = createArenaFlow({ id: props.c.id, frame: props.frame, variants: () => variants.value });
+const { open, done, stats, current, editing, left, right, existing, skippedLeft } = flow;
 const showList = ref(false);
 
 const slot = (v: number) => props.c.frames.find((f) => f.frame === props.frame && f.variant === v);
-const left = computed(() => (current.value ? current.value[swapped.value ? 1 : 0] : 0));
-const right = computed(() => (current.value ? current.value[swapped.value ? 0 : 1] : 0));
-const existing = computed(() => (current.value ? history.value[pairKey(props.frame, current.value[0], current.value[1])] : undefined));
-const skippedLeft = computed(() => open.value.filter(([a, b]) => skipped.has(pairKey(props.frame, a, b))).length);
 
-function show(pair: [number, number] | null) {
-  current.value = pair;
-  swapped.value = Math.random() < 0.5; // the side carries no meaning: the winner is always stored by variant number
-}
-/** Next open pair that was not skipped in this session; null = nothing left to offer. */
-function advance() {
-  editing.value = false;
-  show(open.value.find(([a, b]) => !skipped.has(pairKey(props.frame, a, b))) ?? null);
-}
-
-onMounted(async () => {
-  await loadArena(props.c.id);
-  if (!arena.error) advance();
-});
+onMounted(() => flow.start());
+onBeforeUnmount(() => flow.dispose()); // late answers of this session must not reach the next one
 // A variant that appears later (regeneration finished) adds its pairs; the screen only moves on when nothing is being decided.
 watch(
   () => variants.value.join(","),
   () => {
-    if (!current.value && !editing.value && !arena.loading && !arena.error) advance();
+    if (!current.value && !editing.value && !arena.loading && !arena.error && !arena.saving) flow.advance();
   },
 );
-
-async function choose(winner: number | null) {
-  const p = current.value;
-  if (!p || arena.saving) return;
-  if (await submitComparison(props.c.id, props.frame, p[0], p[1], winner)) advance();
-}
-function skip() {
-  const p = current.value;
-  if (!p) return;
-  if (!existing.value) skipped.add(pairKey(props.frame, p[0], p[1])); // nothing is saved
-  advance();
-}
-function reopen(a: number, b: number) {
-  editing.value = true;
-  show([a, b]);
-}
-function retrySkipped() {
-  skipped.clear();
-  advance();
-}
 
 // ---- prompts (the actual positive prompt of each variant, from the NS-017 endpoint) ----
 const showPrompts = ref(false);
@@ -104,11 +61,7 @@ const differ = computed(() => {
 
 function onKey(e: KeyboardEvent) {
   if (e.key === "Escape") emit("close");
-  else if (!current.value) return;
-  else if (e.key === "ArrowLeft") void choose(left.value);
-  else if (e.key === "ArrowRight") void choose(right.value);
-  else if (e.key === "ArrowDown") void choose(null);
-  else if (e.code === "KeyS") skip();
+  else flow.onKey(e.key, e.code);
 }
 onMounted(() => window.addEventListener("keydown", onKey));
 onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
@@ -149,10 +102,10 @@ const progress = computed(() => `${done.value.length} из ${done.value.length +
         </div>
 
         <div v-if="variants.length >= 2 && current" class="ctl">
-          <button class="btn big" :class="{ on: existing && existing.winnerVariant === left }" :disabled="arena.saving" @click="choose(left)">← Левое лучше</button>
-          <button class="btn big" :class="{ on: existing && existing.winnerVariant === null }" :disabled="arena.saving" @click="choose(null)">Равны</button>
-          <button class="btn big" :class="{ on: existing && existing.winnerVariant === right }" :disabled="arena.saving" @click="choose(right)">Правое лучше →</button>
-          <button class="btn ghost" :disabled="arena.saving" @click="skip()">{{ editing ? "Отмена" : "Пропустить" }}</button>
+          <button class="btn big" :class="{ on: existing && existing.winnerVariant === left }" :disabled="arena.saving" @click="flow.choose(left)">← Левое лучше</button>
+          <button class="btn big" :class="{ on: existing && existing.winnerVariant === null }" :disabled="arena.saving" @click="flow.choose(null)">Равны</button>
+          <button class="btn big" :class="{ on: existing && existing.winnerVariant === right }" :disabled="arena.saving" @click="flow.choose(right)">Правое лучше →</button>
+          <button class="btn ghost" :disabled="arena.saving" @click="flow.skip()">{{ editing ? "Отмена" : "Пропустить" }}</button>
         </div>
         <p v-if="editing && current" class="muted small">Вы пересматриваете сохранённое решение: новое заменит прежнее.</p>
 
@@ -160,7 +113,7 @@ const progress = computed(() => `${done.value.length} из ${done.value.length +
           <h3 v-if="!open.length">Все пары сравнены</h3>
           <h3 v-else>Остались только пропущенные пары</h3>
           <p v-if="open.length" class="muted">Пропущено: {{ skippedLeft }}. Они ничего не сохраняют и остаются доступными.</p>
-          <button v-if="open.length" class="btn primary" @click="retrySkipped()">Вернуться к пропущенным</button>
+          <button v-if="open.length" class="btn primary" :disabled="arena.saving" @click="flow.retrySkipped()">Вернуться к пропущенным</button>
         </div>
 
         <section v-if="variants.length >= 2" class="more">
@@ -186,7 +139,7 @@ const progress = computed(() => `${done.value.length} из ${done.value.length +
               <ul class="list">
                 <li v-for="d in done" :key="`${d.variantA}-${d.variantB}`">
                   <span>v{{ pad2(d.variantA) }} против v{{ pad2(d.variantB) }} — {{ verdictText(d) }}</span>
-                  <button class="link" @click="reopen(d.variantA, d.variantB)">Изменить</button>
+                  <button class="link" :disabled="arena.saving" @click="flow.reopen(d.variantA, d.variantB)">Изменить</button>
                 </li>
               </ul>
             </template>

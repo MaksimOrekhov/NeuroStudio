@@ -552,12 +552,12 @@ export const arena = reactive({
   error: null as UiError | null,
   saving: false,
 });
+/** Identifies the current Arena session: every open and every close starts a new one, so answers to older requests are ignored. */
 let arenaSeq = 0;
-let arenaQueue: Promise<unknown> = Promise.resolve();
 
 export async function loadArena(id: string): Promise<void> {
   const seq = ++arenaSeq;
-  Object.assign(arena, { history: {}, loadedFor: null, loading: true, error: null });
+  Object.assign(arena, { history: {}, loadedFor: null, loading: true, error: null, saving: false });
   try {
     const r = await getComparisons(id);
     if (seq === arenaSeq) Object.assign(arena, { history: r.comparisons, loadedFor: id });
@@ -568,23 +568,31 @@ export async function loadArena(id: string): Promise<void> {
   }
 }
 
-/** Saves one verdict (replacing an earlier one of the same pair). The history changes only after the server confirms.
- * Saves are sent one at a time; returns true when the server accepted it. */
-export function submitComparison(id: string, frame: number, a: number, b: number, winner: number | null): Promise<boolean> {
-  const run = arenaQueue.then(async () => {
-    arena.saving = true;
-    arena.error = null;
-    try {
-      const r = await saveComparison(id, frame, { variantA: Math.min(a, b), variantB: Math.max(a, b), winnerVariant: winner });
-      if (arena.loadedFor === id) arena.history = { ...arena.history, [pairKey(frame, a, b)]: r.comparison };
-      return true;
-    } catch (e) {
-      arena.error = describeError(e);
-      return false;
-    } finally {
-      arena.saving = false;
-    }
-  });
-  arenaQueue = run;
-  return run;
+/** The Arena was closed: whatever is still in flight belongs to a dead session and changes nothing any more. */
+export function closeArena() {
+  arenaSeq++;
+  Object.assign(arena, { history: {}, loadedFor: null, loading: false, error: null, saving: false });
+}
+
+/**
+ * Saves one verdict (replacing an earlier one of the same pair). `saving` is set synchronously, before anything is awaited, so a
+ * second call while one is in flight is refused (false) and sends nothing. The history changes only after the server confirms, and
+ * only if the session that sent the request is still the current one. Returns true when the verdict was saved in this session.
+ */
+export async function submitComparison(id: string, frame: number, a: number, b: number, winner: number | null): Promise<boolean> {
+  if (arena.saving || arena.loadedFor !== id) return false;
+  const seq = arenaSeq;
+  arena.saving = true;
+  arena.error = null;
+  try {
+    const r = await saveComparison(id, frame, { variantA: Math.min(a, b), variantB: Math.max(a, b), winnerVariant: winner });
+    if (seq !== arenaSeq) return false;
+    arena.history = { ...arena.history, [pairKey(frame, a, b)]: r.comparison };
+    return true;
+  } catch (e) {
+    if (seq === arenaSeq) arena.error = describeError(e);
+    return false;
+  } finally {
+    if (seq === arenaSeq) arena.saving = false; // a stale request must not release the lock of a newer session
+  }
 }

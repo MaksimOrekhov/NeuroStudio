@@ -246,3 +246,165 @@ test("UI store: history loads, a verdict appears only after the server confirms,
   assert.match(S.arena.error!.message, /История сравнений недоступна/);
   assert.match(S.arena.error!.details!, /comparisons\.json/);
 });
+
+// ---------- Arena screen logic: locking while saving, retry, stale sessions (review of PR #21) ----------
+
+const { createArenaFlow } = await import("../web/src/arenaFlow.ts");
+
+/** A fake fetch over the real API. A "hold" delays ONE matching request until released; `snapshot` answers with the data the server had when the request was sent. */
+async function arenaEnv(ids: string[] = ["A"]) {
+  const t = await setup();
+  for (const id of ids) await t.make(id, frame3(3));
+  const puts: string[] = [];
+  type Hold = { match: (url: string, init?: RequestInit) => boolean; gate: Promise<void>; fail?: { status: number; body: unknown }; snapshot?: boolean };
+  const holds: Hold[] = [];
+  route = async (url, init) => {
+    if (init?.method === "PUT") puts.push(url);
+    const i = holds.findIndex((x) => x.match(url, init));
+    const h = i >= 0 ? holds.splice(i, 1)[0] : undefined; // one-shot
+    const send = async () => {
+      const r = await t.app.inject({ method: (init?.method ?? "GET") as any, url, headers: { host: H.host, ...((init?.headers as Record<string, string>) ?? {}) }, payload: init?.body as any });
+      return { ok: r.statusCode < 400, status: r.statusCode, json: async () => r.json() } as Response;
+    };
+    if (!h) return send();
+    const early = h.snapshot ? await send() : null;
+    await h.gate;
+    if (h.fail) return { ok: false, status: h.fail.status, json: async () => h.fail!.body } as Response;
+    return early ?? send();
+  };
+  const hold = (match: Hold["match"], extra: Pick<Hold, "fail" | "snapshot"> = {}) => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    holds.push({ match, gate, ...extra });
+    return release;
+  };
+  const flowFor = (id: string) => createArenaFlow({ id, frame: 3, variants: () => [1, 2, 3] });
+  const isPut = (id: string) => (url: string, init?: RequestInit) => init?.method === "PUT" && url.includes(`/collections/${id}/`);
+  const isGet = (id: string) => (url: string, init?: RequestInit) => !init?.method && url.endsWith(`/collections/${id}/comparisons`);
+  return { t, puts, hold, flowFor, isPut, isGet };
+}
+const tick = () => new Promise((r) => setTimeout(r, 15));
+
+test("Arena: while a verdict is being saved, S does not skip, a second confirmation sends nothing, and another pair cannot be reopened", async () => {
+  const env = await arenaEnv();
+  const f = env.flowFor("A");
+  await f.start();
+  const first = f.current.value!;
+  const release = env.hold(env.isPut("A"));
+  const saving = f.choose(first[0]); // the verdict is in flight
+  assert.equal(S.arena.saving, true); // locked synchronously, before anything is awaited
+  f.onKey("s", "KeyS"); // S must not skip the next pair
+  f.onKey("ArrowLeft", "ArrowLeft");
+  f.onKey("ArrowRight", "ArrowRight");
+  f.onKey("ArrowDown", "ArrowDown");
+  assert.equal(f.skipped.size, 0);
+  assert.equal(f.current.value, first);
+  assert.equal(await f.choose(first[1]), false); // quick second confirmation of the same pair
+  f.skip();
+  f.reopen(2, 3); // reviewing another pair is blocked as well
+  f.retrySkipped();
+  assert.equal(f.editing.value, false);
+  assert.equal(f.current.value, first);
+  await tick();
+  assert.equal(env.puts.length, 1); // exactly one request
+  release();
+  assert.equal(await saving, true);
+  assert.notEqual(f.current.value, first); // moved on to the next open pair
+  assert.equal(S.arena.saving, false);
+  assert.equal(env.puts.length, 1);
+  // unlocked again: the same actions work now
+  f.skip();
+  assert.equal(f.skipped.size, 1);
+  f.reopen(1, 2);
+  assert.equal(f.editing.value, true);
+  f.dispose();
+});
+
+test("Arena: a failed save keeps the pair on screen, shows the error, and the same action can be repeated", async () => {
+  const env = await arenaEnv();
+  const f = env.flowFor("A");
+  await f.start();
+  const p = f.current.value!;
+  const release = env.hold(env.isPut("A"), { fail: { status: 409, body: { error: "comparisons.json cannot be used: x", code: "COMPARISON_FILE_UNREADABLE" } } });
+  const r = f.choose(p[1]);
+  release();
+  assert.equal(await r, false);
+  assert.equal(f.current.value, p); // still on screen
+  assert.match(S.arena.error!.message, /История сравнений недоступна/);
+  assert.equal(S.arena.saving, false); // unlocked, so the user can repeat
+  assert.deepEqual(S.arena.history, {}); // nothing is shown as saved
+  assert.equal(await f.choose(p[1]), true); // the repeat (no hold any more) works and moves on
+  assert.notEqual(f.current.value, p);
+  assert.equal(S.arena.error, null);
+  f.dispose();
+});
+
+test("Arena: a late error from collection A is not shown in collection B and does not release B's save lock", async () => {
+  const env = await arenaEnv(["A", "B"]);
+  const a = env.flowFor("A");
+  await a.start();
+  const releaseA = env.hold(env.isPut("A"), { fail: { status: 500, body: { error: "late A failure" } } });
+  const sa = a.choose(a.current.value![0]); // in flight for A
+  a.dispose(); // the user closes A and opens B
+  const b = env.flowFor("B");
+  await b.start();
+  assert.equal(S.arena.error, null);
+  assert.equal(S.arena.loadedFor, "B");
+  const releaseB = env.hold(env.isPut("B"));
+  const sb = b.choose(b.current.value![0]); // B saves
+  assert.equal(S.arena.saving, true);
+  releaseA(); // A's failure arrives late
+  assert.equal(await sa, false);
+  await tick();
+  assert.equal(S.arena.error, null); // not shown in B
+  assert.equal(S.arena.saving, true); // B's operation still holds its lock
+  releaseB();
+  assert.equal(await sb, true);
+  assert.equal(S.arena.saving, false);
+  assert.equal(Object.keys(S.arena.history).length, 1);
+  b.dispose();
+});
+
+test("Arena: a late successful answer of A does not write into B's history", async () => {
+  const env = await arenaEnv(["A", "B"]);
+  const a = env.flowFor("A");
+  await a.start();
+  const releaseA = env.hold(env.isPut("A"));
+  const sa = a.choose(a.current.value![0]);
+  a.dispose();
+  const b = env.flowFor("B");
+  await b.start();
+  releaseA();
+  assert.equal(await sa, false); // the session is gone: not reported as saved here
+  assert.deepEqual(S.arena.history, {});
+  assert.equal(S.arena.loadedFor, "B");
+  b.dispose();
+});
+
+test("Arena: closing and reopening quickly does not bring back stale state", async () => {
+  const env = await arenaEnv(["A"]);
+  // the first open's history request is sent with the then-empty history and answered late
+  const release = env.hold(env.isGet("A"), { snapshot: true });
+  const f1 = env.flowFor("A");
+  const s1 = f1.start();
+  await tick();
+  f1.dispose(); // closed at once
+  await env.t.put("A", 3, { variantA: 1, variantB: 2, winnerVariant: 2 }); // a verdict exists by the time of the second open
+  const f2 = env.flowFor("A");
+  await f2.start();
+  assert.equal(Object.keys(S.arena.history).length, 1);
+  const shown = f2.current.value;
+  release(); // the stale empty answer of the first session arrives now
+  await s1;
+  await tick();
+  assert.equal(Object.keys(S.arena.history).length, 1); // not replaced by the stale empty history
+  assert.equal(S.arena.loadedFor, "A");
+  assert.equal(S.arena.loading, false);
+  assert.equal(S.arena.error, null);
+  assert.equal(f2.current.value, shown);
+  assert.ok(!f2.open.value.some(([a, b]) => a === 1 && b === 2)); // the saved pair is still not offered
+  // closing clears everything: nothing of the old Arena is left for the next one
+  f2.dispose();
+  assert.deepEqual(S.arena.history, {});
+  assert.equal(S.arena.loadedFor, null);
+});
