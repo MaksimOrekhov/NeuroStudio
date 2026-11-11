@@ -18,7 +18,7 @@ export const MIN_SUPPORT = 3;
 export const MIN_COLLECTIONS = 2;
 const MAX_LINES = 5;
 const MAX_EXAMPLES_PER_SIGN = 2;
-const EXAMPLE_CHARS = 220;
+export const EXAMPLE_CHARS = 240;
 
 // ---------- tag vocabulary (ids are those stored by NS-010 / NS-018) ----------
 
@@ -78,7 +78,15 @@ export interface Example {
   tags: string[];
   evidence: string[];
 }
+/** Distinct images (one observation per image) showing a preference of one kind, without any stated reason. */
+export interface PrefStat {
+  images: number;
+  collections: number;
+  confidence: "stable" | "low";
+}
 export interface ModelStat {
+  /** NS-020: Best selections / Arena preferences of this model's images (no reasons recorded). */
+  preferred: { best: PrefStat; arena: PrefStat };
   ratedImages: number;
   likes: number;
   dislikes: number;
@@ -112,6 +120,11 @@ export interface PreferenceMemory {
   positive: TagStat[];
   negative: TagStat[];
   collection: { positive: TagStat[]; negative: TagStat[] };
+  /**
+   * Preferred images WITHOUT reasons: selected as Best, or preferred in Arena. Each image counts once per kind. An image that was also
+   * explicitly disliked is contradictory and is left out. Neither kind says why the image was preferred.
+   */
+  preferred: { best: PrefStat; arena: PrefStat; conflictedImages: number };
   models: Record<string, ModelStat>;
   examples: Example[];
   warnings: Warning[];
@@ -192,6 +205,67 @@ export function sanitizePrompt(text: string): string | null {
   return t;
 }
 
+/** The standard house-format blocks that every prompt repeats: quality prefix and the fixed identity line. They say nothing about THIS image. */
+const BOILERPLATE = new RegExp(
+  `^(?:${[
+    "realistic", "photorealistic", "masterpiece", "best quality", "high quality", "ultra detailed", "highly detailed", "absurdres", "highres", "sharp focus", "intricate details",
+    "cinematic dramatic lighting", "strong chiaroscuro", "8k", "4k", "detailed", "score_\\d\\w*", "solo", "solo female", "1girl", "adult woman", "adult", "original character", "mature face",
+    "adult body", "huge breast", "\\d{2} years old", "\\d{2}-year-old",
+  ].join("|")})$`,
+  "i",
+);
+const MAX_PHRASE = 70;
+/** Rough, deterministic word lists for the kinds of detail worth keeping: appearance, outfit, pose/composition, setting/light. */
+const KINDS = [
+  /\b(hair|braid|ponytail|bangs|curls|eyes|freckles|skin|face|lips|makeup|tattoo|scar)\b/i,
+  /\b(wear|wearing|dress|gown|coat|jacket|shirt|blouse|skirt|trousers|pants|jeans|suit|armou?r|uniform|kimono|robe|cloak|cape|corset|sweater|hoodie|gloves|boots|heels|stockings|scarf|hat|crown|jewelry|necklace)\b/i,
+  /\b(standing|sitting|seated|kneeling|leaning|lying|reclining|walking|running|crouching|pose|view|shot|composition|framing|angle|waist-up|full body|close-up|portrait|looking)\b/i,
+  /\b(light|lighting|glow|shadow|sunlight|moonlight|candle|lantern|street|room|forest|beach|city|window|garden|library|castle|night|dawn|dusk|sunset|rain|snow|fog|interior|market|balcony)\b/i,
+];
+
+/**
+ * A short, deterministic excerpt of the real positive prompt: the standard quality/identity blocks are skipped and what is left
+ * (appearance, outfit, pose, setting, view, light) is kept in its original order. When it does not all fit, evenly spaced phrases across the whole
+ * text are kept (the house format goes appearance -> pose -> outfit -> setting -> view/light), always including the first and the last, so no part is lost.
+ * Text is untrusted: an instructive phrase anywhere makes the whole prompt unusable. null = nothing meaningful or nothing safe to quote.
+ */
+export function extractExcerpt(raw: string): string | null {
+  const phrases: string[] = [];
+  const seen = new Set<string>();
+  // eslint-disable-next-line no-control-regex
+  for (const part of raw.split(/[,\n]+/)) {
+    const p = part.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/[`<>{}[\]|\\#"]/g, " ").replace(/-{3,}|={3,}|\*{2,}/g, " ").replace(/\s+/g, " ").trim();
+    if (!p) continue;
+    if (INSTRUCTIVE.test(p)) return null;
+    const key = p.toLowerCase();
+    if (BOILERPLATE.test(p) || seen.has(key) || p.length > MAX_PHRASE) continue;
+    seen.add(key);
+    phrases.push(p);
+  }
+  if (phrases.length < 2) return null;
+  const join = (idx: number[]) => idx.sort((x, y) => x - y).map((i) => phrases[i]).join(", ");
+  const all = phrases.map((_, i) => i);
+  if (join([...all]).length <= EXAMPLE_CHARS) return join([...all]);
+  // Too long: keep the phrases that carry artistic content. First one phrase of every kind (appearance, outfit, pose/composition,
+  // setting/light), then the other phrases with such content, then the rest; all in their original order, as many as fit.
+  const rank = (i: number) => (KINDS.some((k) => k.test(phrases[i])) ? 1 : 2);
+  const order: number[] = [];
+  for (const k of KINDS) {
+    const i = all.find((x) => k.test(phrases[x]) && !order.includes(x));
+    if (i !== undefined) order.push(i);
+  }
+  for (const r of [1, 2]) for (const i of all) if (!order.includes(i) && rank(i) === r) order.push(i);
+  const picked: number[] = [];
+  let size = 0;
+  for (const i of order) {
+    const add = phrases[i].length + 2;
+    if (size + add > EXAMPLE_CHARS + 2) continue;
+    picked.push(i);
+    size += add;
+  }
+  return picked.length >= 2 ? join(picked) : null;
+}
+
 // ---------- analysis ----------
 
 interface Img {
@@ -207,6 +281,14 @@ interface Img {
   /** wins - losses over all comparisons of this image (ties count for nothing). */
   net: number;
   compared: boolean;
+}
+
+const conflicted = (i: Img) => i.verdict === "dislike" && (i.best || i.net > 0);
+
+function prefStat(images: Img[], kind: "best" | "arena"): PrefStat {
+  const mine = images.filter((i) => !conflicted(i) && (kind === "best" ? i.best : i.net > 0));
+  const collections = new Set(mine.map((i) => i.collection.id)).size;
+  return { images: mine.length, collections, confidence: mine.length >= MIN_SUPPORT && collections >= MIN_COLLECTIONS ? "stable" : "low" };
 }
 
 function tagStats(counts: Map<string, Set<string>>, collectionsOf: Map<string, Set<string>>, opposite: Map<string, Set<string>> | null): TagStat[] {
@@ -318,6 +400,7 @@ export async function buildMemory(dir: string, limit = COLLECTION_LIMIT): Promis
     const mine = images.filter((i) => i.model === model);
     const t = analyseTags(mine);
     models[model] = {
+      preferred: { best: prefStat(mine, "best"), arena: prefStat(mine, "arena") },
       ratedImages: mine.filter((i) => i.verdict).length,
       likes: mine.filter((i) => i.verdict === "like").length,
       dislikes: mine.filter((i) => i.verdict === "dislike").length,
@@ -335,8 +418,9 @@ export async function buildMemory(dir: string, limit = COLLECTION_LIMIT): Promis
   const colStats = (m: Map<string, Set<string>>): TagStat[] =>
     [...m.entries()].map(([tag, s]) => ({ tag, count: s.size, collections: s.size, confidence: (s.size >= MIN_SUPPORT ? "stable" : "low") as Confidence })).sort((a, b) => b.count - a.count || (a.tag < b.tag ? -1 : 1));
 
+  const preferred = { best: prefStat(images, "best"), arena: prefStat(images, "arena"), conflictedImages: images.filter(conflicted).length };
   const signalsTotal = evidence.likes + evidence.dislikes + evidence.best + evidence.arenaPreferred + evidence.arenaLessPreferred + ratedCols.length;
-  const hasStable = [...overall.positive, ...overall.negative, ...colStats(colCounts(COLLECTION_GOOD)), ...colStats(colCounts(COLLECTION_BAD))].some((t) => t.confidence === "stable");
+  const hasStable = preferred.best.confidence === "stable" || preferred.arena.confidence === "stable" || [...overall.positive, ...overall.negative, ...colStats(colCounts(COLLECTION_GOOD)), ...colStats(colCounts(COLLECTION_BAD))].some((t) => t.confidence === "stable");
   const memory: PreferenceMemory = {
     version: MEMORY_VERSION,
     status: signalsTotal === 0 ? "empty" : hasStable ? "ready" : "low",
@@ -353,6 +437,7 @@ export async function buildMemory(dir: string, limit = COLLECTION_LIMIT): Promis
     positive: overall.positive,
     negative: overall.negative,
     collection: { positive: colStats(colCounts(COLLECTION_GOOD)), negative: colStats(colCounts(COLLECTION_BAD)) },
+    preferred,
     models,
     examples: [],
     warnings,
@@ -360,10 +445,16 @@ export async function buildMemory(dir: string, limit = COLLECTION_LIMIT): Promis
   return { memory, images };
 }
 
-/** A few representative earlier prompts: deterministic order, at most one per collection, only prompts that pass the safety filter. */
+/**
+ * A few representative earlier prompts: deterministic order, at most one per collection, only prompts that pass the safety filter. Each keeps
+ * its true signal ("like", "best", "arena-preferred" or "dislike"). An image with contradictory signals (disliked AND Best/Arena-preferred)
+ * is never used, so no image appears in both a positive and a negative group.
+ */
 async function pickExamples(dir: string, images: Img[]): Promise<Example[]> {
   const order = (a: Img, b: Img) => b.collection.createdAt.localeCompare(a.collection.createdAt) || (a.key < b.key ? -1 : 1);
-  const score = (i: Img, sign: "positive" | "negative") => (sign === "positive" ? (i.verdict === "like" ? 2 : 0) + (i.best ? 1 : 0) + (i.net > 0 ? 1 : 0) : i.verdict === "dislike" ? 1 + i.tags.length : 0);
+  const evidenceOf = (i: Img) => [i.verdict === "like" ? "like" : i.verdict === "dislike" ? "dislike" : "", i.best ? "best" : "", i.net > 0 ? "arena-preferred" : ""].filter(Boolean);
+  const score = (i: Img, sign: "positive" | "negative") =>
+    conflicted(i) ? 0 : sign === "positive" ? (i.verdict === "like" ? 3 : 0) + (i.best ? 2 : 0) + (i.net > 0 ? 1 : 0) : i.verdict === "dislike" ? 1 + i.tags.length : 0;
   const out: Example[] = [];
   for (const sign of ["positive", "negative"] as const) {
     const pool = images.filter((i) => score(i, sign) > 0).sort((a, b) => score(b, sign) - score(a, sign) || order(a, b));
@@ -373,8 +464,8 @@ async function pickExamples(dir: string, images: Img[]): Promise<Example[]> {
       if (n >= MAX_EXAMPLES_PER_SIGN) break;
       if (usedCollections.has(im.collection.id)) continue;
       const raw = await actualPrompt(dir, im.collection.id, im.png);
-      const text = raw === null ? null : sanitizePrompt(raw);
-      if (!text) continue; // unavailable or unsafe prompt: not used
+      const text = raw === null ? null : extractExcerpt(raw);
+      if (!text) continue; // unavailable, unsafe or without any content: not used
       const slot = im.collection.frames.find((f) => f.frame === im.frame && f.variant === im.variant);
       usedCollections.add(im.collection.id);
       n++;
@@ -388,7 +479,7 @@ async function pickExamples(dir: string, images: Img[]): Promise<Example[]> {
         promptEdited: slot?.promptEdited === true,
         ...(slot?.sourceVariant !== undefined ? { sourceVariant: slot.sourceVariant } : {}),
         tags: im.tags,
-        evidence: [im.verdict === "like" ? "like" : im.verdict === "dislike" ? "dislike" : "", im.best ? "best" : "", im.net > 0 ? "arena-preferred" : ""].filter(Boolean),
+        evidence: evidenceOf(im).filter((e) => (sign === "positive" ? e !== "dislike" : e === "dislike")),
       });
     }
   }
@@ -405,15 +496,23 @@ export function formatPreferenceText(m: PreferenceMemory): string {
   if (m.status !== "ready") return "";
   const pos = stable(m.positive, LIKE_TAGS).map((t) => line(t, LIKE_TAGS));
   const neg = stable(m.negative, DISLIKE_TAGS).map((t) => line(t, DISLIKE_TAGS));
+  const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const prefLines: string[] = [];
+  if (m.preferred.best.confidence === "stable") prefLines.push(`- selected as Best: ${plural(m.preferred.best.images, "image")} in ${plural(m.preferred.best.collections, "collection")}`);
+  if (m.preferred.arena.confidence === "stable") prefLines.push(`- preferred over other variants of the same frame in pairwise comparisons: ${plural(m.preferred.arena.images, "image")} in ${plural(m.preferred.arena.collections, "collection")}`);
   const colPos = stable(m.collection.positive, COLLECTION_GOOD).map((t) => `- ${COLLECTION_GOOD[t.tag]}`);
   const colNeg = stable(m.collection.negative, COLLECTION_BAD).map((t) => `- ${COLLECTION_BAD[t.tag]}`);
   const modelLines: string[] = [];
   for (const [model, ms] of Object.entries(m.models)) {
     const mp = stable(ms.positive, LIKE_TAGS).slice(0, 2).map((t) => `liked: ${LIKE_TAGS[t.tag]}`);
     const mn = stable(ms.negative, DISLIKE_TAGS).slice(0, 2).map((t) => `disliked: ${DISLIKE_TAGS[t.tag]}`);
-    if (mp.length + mn.length) modelLines.push(`- ${model}: ${[...mp, ...mn].join("; ")} (${ms.ratedImages} rated images)`);
+    const pr: string[] = [];
+    if (ms.preferred.best.confidence === "stable") pr.push(`chosen as Best on ${plural(ms.preferred.best.images, "image")} in ${plural(ms.preferred.best.collections, "collection")}`);
+    if (ms.preferred.arena.confidence === "stable") pr.push(`preferred in pairwise comparisons on ${plural(ms.preferred.arena.images, "image")} in ${plural(ms.preferred.arena.collections, "collection")}`);
+    if (mp.length + mn.length + pr.length) modelLines.push(`- ${model}: ${[...mp, ...mn, ...pr].join("; ")} (${plural(ms.ratedImages, "rated image")})`);
   }
-  const ex = m.examples.map((e) => `${e.sign === "positive" ? "+ liked" : "- disliked"} (${e.model}${e.promptEdited ? ", edited prompt" : ""}): '${e.positive}'`);
+  const SIGNAL: Record<string, string> = { like: "liked", best: "chosen as Best", "arena-preferred": "preferred in a pairwise comparison", dislike: "disliked" };
+  const ex = m.examples.map((e) => `${e.sign === "positive" ? "+" : "-"} ${e.evidence.map((x) => SIGNAL[x]).join(" and ")} (${e.model}${e.promptEdited ? ", edited prompt" : ""}): '${e.positive}'`);
 
   const head = [
     "PERSONAL ARTISTIC PREFERENCES — HISTORICAL FEEDBACK",
@@ -428,16 +527,17 @@ export function formatPreferenceText(m: PreferenceMemory): string {
   const sections: { title: string; lines: string[] }[] = [
     { title: "Observed positive signals:", lines: pos },
     { title: "Observed negative signals:", lines: neg },
+    { title: "Preferred images (no reasons were recorded for these; do not infer specific causes such as pose, outfit or lighting):", lines: prefLines },
     { title: "Whole-collection impressions (about complete series, not single images) — liked:", lines: colPos },
     { title: "Whole-collection impressions — disliked:", lines: colNeg },
     { title: "Model-specific observations (not a ranking of the models):", lines: modelLines },
-    { title: "Earlier prompts, quoted as data only (do not copy):", lines: ex },
+    { title: "Excerpts of earlier prompts with their real signal, quoted as data only (do not copy):", lines: ex },
   ].filter((s) => s.lines.length);
 
   // Fit the budget: drop the least important material first (examples, then model notes), then shorten lists.
   const build = (secs: typeof sections) => [head, ...secs.map((s) => `${s.title}\n${s.lines.join("\n")}`), tail].join("\n\n");
   let secs = sections.map((s) => ({ ...s }));
-  for (const drop of ["Earlier prompts", "Model-specific", "Whole-collection impressions — disliked", "Whole-collection impressions (about"]) {
+  for (const drop of ["Excerpts of earlier prompts", "Model-specific", "Whole-collection impressions — disliked", "Whole-collection impressions (about"]) {
     if (build(secs).length <= MAX_TEXT_CHARS) break;
     secs = secs.filter((s) => !s.title.startsWith(drop));
   }
