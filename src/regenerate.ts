@@ -142,30 +142,36 @@ async function exists(p: string): Promise<boolean> {
   );
 }
 
+/** File operations used for every write; a plain object so tests can inject EPERM/EBUSY and disk errors. */
+export const io = { writeFile, rename, unlink };
+
 /**
- * Atomic replace (write a temp file, rename over the target). On Windows the rename fails with EPERM/EBUSY while the UI
- * is reading the file, so it is retried briefly; as a last resort the file is written in place (never lose a prompt_id).
+ * Atomic replace: write a temp file, then rename it over the target. On Windows the rename can fail with EPERM/EBUSY/EACCES while
+ * the UI is reading the file, so it is retried briefly. If it still fails the error is thrown and the existing file is left exactly
+ * as it was (valid, complete): it is NEVER truncated or overwritten in place, because a crash mid-write would destroy it.
  */
-async function saveManifest(cdir: string, m: Manifest) {
-  const file = join(cdir, "collection.json");
-  const text = JSON.stringify(m, null, 2);
-  await writeFile(file + ".tmp", text);
-  for (let i = 0; i < 8; i++) {
-    try {
-      await rename(file + ".tmp", file);
-      return;
-    } catch (e) {
-      if (!["EPERM", "EBUSY", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e;
-      await new Promise((r) => setTimeout(r, 25 * (i + 1)));
+export async function writeAtomic(file: string, text: string): Promise<void> {
+  const tmp = `${file}.tmp`;
+  try {
+    await io.writeFile(tmp, text);
+    for (let i = 0; ; i++) {
+      try {
+        await io.rename(tmp, file);
+        return;
+      } catch (e) {
+        if (i >= 5 || !["EPERM", "EBUSY", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e;
+        await new Promise((r) => setTimeout(r, 20 * (i + 1)));
+      }
     }
+  } catch (e) {
+    await io.unlink(tmp).catch(() => {});
+    throw e;
   }
-  await writeFile(file, text);
-  await unlink(file + ".tmp").catch(() => {});
 }
 
-async function writeSidecar(cdir: string, name: string, data: Record<string, unknown>) {
-  await writeFile(join(cdir, `${name}.json`), JSON.stringify(data, null, 2));
-}
+const saveManifest = (cdir: string, m: Manifest) => writeAtomic(join(cdir, "collection.json"), JSON.stringify(m, null, 2));
+
+const writeSidecar = (cdir: string, name: string, data: Record<string, unknown>) => writeAtomic(join(cdir, `${name}.json`), JSON.stringify(data, null, 2));
 
 /**
  * Builds the new variant (number, seed, graph) and writes its slot into collection.json as "pending" together with its
@@ -190,9 +196,15 @@ export async function reserve(dir: string, id: string, src: RegenSource, positiv
   const graph = applyParams(src.graph, { positive: text, seed, filenamePrefix: `${folder}/${name}` });
   const promptEdited = positive !== undefined && positive !== src.positive;
   const record: FrameRecord = { frame: src.frame, variant, model: src.model, seed, status: "pending", sourceVariant: src.variant, ...(promptEdited ? { promptEdited: true } : {}) };
-  m.frames.push(record);
   await writeSidecar(cdir, name, { frame: src.frame, variant, model: src.model, seed, sourceVariant: src.variant, promptEdited, positive: text, status: "pending", graph });
-  await saveManifest(cdir, m);
+  m.frames.push(record);
+  try {
+    await saveManifest(cdir, m);
+  } catch (e) {
+    m.frames.pop(); // nothing was submitted: the slot does not exist; the old collection.json is untouched
+    await io.unlink(join(cdir, `${name}.json`)).catch(() => {});
+    throw e;
+  }
   return { name, variant, seed, graph, positive: text, promptEdited, record, manifest: m, collectionDir: cdir };
 }
 
@@ -209,21 +221,33 @@ export async function runRegeneration(opts: { r: Reservation; client: Client; fr
   const cdir = r.collectionDir;
   const base = { frame: rec.frame, variant: r.variant, model: rec.model, seed: r.seed, sourceVariant: rec.sourceVariant, promptEdited: r.promptEdited, positive: r.positive, graph: r.graph };
   const t0 = Date.now();
+  /** Persistence problems after ComfyUI accepted the job: never fatal for the job itself, never a reason to resubmit. */
+  const problems: string[] = [];
+  const side = (extra: Record<string, unknown>) => writeSidecar(cdir, r.name, { ...base, promptId: rec.promptId, ...extra });
   const save = async () => {
     await saveManifest(cdir, r.manifest);
     opts.onProgress?.();
   };
+  const trySave = async () => {
+    try {
+      await save();
+    } catch (e) {
+      problems.push(`collection.json: ${(e as Error).message}`);
+    }
+  };
+  const tag = () => (rec.promptId ? ` [prompt_id ${rec.promptId}]` : "");
   const fail = async (status: FrameRecord["status"], e: Error) => {
     rec.status = status;
-    rec.error = e.message;
+    rec.error = e.message + tag() + (problems.length ? ` (could not be saved: ${problems.join("; ")})` : "");
     rec.seconds = (Date.now() - t0) / 1000;
-    await writeSidecar(cdir, r.name, { ...base, status, promptId: rec.promptId, seconds: rec.seconds, error: e.message }).catch(() => {});
-    await save().catch(() => {});
+    await side({ status, seconds: rec.seconds, error: rec.error }).catch(() => {});
+    await trySave();
+    e.message = rec.error;
   };
   try {
     await client.systemStats();
-    const problems = await client.checkDependencies(r.graph);
-    if (problems.length) throw new Error(`Missing dependencies for ${rec.model}:\n  ${problems.join("\n  ")}`);
+    const problemsDeps = await client.checkDependencies(r.graph);
+    if (problemsDeps.length) throw new Error(`Missing dependencies for ${rec.model}:\n  ${problemsDeps.join("\n  ")}`);
   } catch (e) {
     await fail("failed", e as Error); // nothing was submitted
     throw e;
@@ -234,8 +258,15 @@ export async function runRegeneration(opts: { r: Reservation; client: Client; fr
     await fail("failed", e as Error); // rejected: nothing was accepted
     throw e;
   }
+  // The job is accepted. FIRST make the prompt_id durable in the variant's own sidecar (a new file, written atomically), THEN try the
+  // manifest. A failure of either is recorded and the job is still awaited; it is never submitted again.
   rec.status = "submitted";
-  await save();
+  try {
+    await side({ status: "submitted" });
+  } catch (e) {
+    problems.push(`${r.name}.json: ${(e as Error).message}`);
+  }
+  await trySave();
   let images: ImageRef[];
   let history: unknown;
   try {
@@ -247,16 +278,25 @@ export async function runRegeneration(opts: { r: Reservation; client: Client; fr
   }
   try {
     const png = await client.download(images[0]);
-    await writeFile(join(cdir, `${r.name}.png`), png, { flag: "wx" }); // never overwrites
-    rec.png = `${r.name}.png`;
-    rec.seconds = (Date.now() - t0) / 1000;
-    rec.status = "done";
-    await writeSidecar(cdir, r.name, { ...base, status: "done", promptId: rec.promptId, seconds: rec.seconds, image: images[0], history });
-    await save();
+    await io.writeFile(join(cdir, `${r.name}.png`), png, { flag: "wx" }); // never overwrites
   } catch (e) {
-    rec.png = undefined;
     await fail("failed", e as Error); // the job finished in ComfyUI (prompt_id kept) but its image could not be stored
     throw e;
+  }
+  rec.png = `${r.name}.png`;
+  rec.seconds = (Date.now() - t0) / 1000;
+  rec.status = "done";
+  try {
+    await side({ status: "done", seconds: rec.seconds, image: images[0], history });
+  } catch (e) {
+    problems.push(`${r.name}.json: ${(e as Error).message}`);
+  }
+  try {
+    await save();
+  } catch (e) {
+    // The PNG is on disk and (if the sidecar was written) described there; the manifest still lists the slot as submitted. Reading the
+    // collection recovers the slot from its sidecar. Report it instead of pretending everything is saved.
+    throw new Error(`The image ${rec.png} was created${tag()} but collection.json could not be updated: ${(e as Error).message}`);
   }
   opts.log?.(`regenerated ${r.name} in ${rec.seconds!.toFixed(1)}s`);
   return rec;

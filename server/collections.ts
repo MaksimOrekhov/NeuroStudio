@@ -1,4 +1,4 @@
-import { readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { Generation, Manifest } from "../src/collection.ts";
 import type { PromptPlan } from "../src/promptPlan.ts";
@@ -171,8 +171,23 @@ export async function readCollection(dir: string, id: string, activeId?: string)
     if (m.status !== "running" && id !== activeId) {
       for (const f of frames) {
         if (f.sourceVariant !== undefined && (f.status === "pending" || f.status === "submitted")) {
-          f.status = f.status === "submitted" ? "timeout" : "failed"; // accepted by ComfyUI: outcome unknown
-          f.error = "Regeneration was interrupted before the image was saved; it is not resubmitted automatically";
+          const name = `scene-${String(f.frame).padStart(2, "0")}-v${String(f.variant).padStart(2, "0")}`;
+          // The variant's own sidecar is written before the manifest (prompt_id first), so it may know more than collection.json.
+          let side: { status?: string; promptId?: string; error?: string } = {};
+          try {
+            side = JSON.parse(await readFile(join(dir, id, `${name}.json`), "utf8"));
+          } catch {
+            /* no sidecar: keep what the manifest says */
+          }
+          if (typeof side.promptId === "string" && !f.promptId) f.promptId = side.promptId;
+          const hasPng = side.status === "done" && (await stat(join(dir, id, `${name}.png`)).then((s) => s.isFile(), () => false));
+          if (hasPng) {
+            f.status = "done";
+            f.image = `${name}.png`;
+          } else {
+            f.status = f.status === "submitted" || f.promptId ? "timeout" : "failed"; // accepted by ComfyUI: outcome unknown
+            f.error = side.error ?? "Regeneration was interrupted before the image was saved; it is not resubmitted automatically";
+          }
         }
       }
     }

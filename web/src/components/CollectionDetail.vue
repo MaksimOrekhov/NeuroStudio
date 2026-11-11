@@ -76,7 +76,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
           <h1>{{ titleOf(c) }}</h1>
           <span class="badge" :class="badge.cls"><span v-if="c.status === 'running'" class="spinner" />{{ badge.text }}</span>
         </div>
-        <p class="muted small">{{ date }} · {{ nPlural(c.frameCount, W.frame) }}<template v-if="variants">{{ " " + variants }}</template></p>
+        <p class="muted small">{{ date }} · {{ nPlural(c.frameCount, W.frame) }}<template v-if="variants">{{ (variants.startsWith("×") ? " " : " · ") + variants }}</template></p>
         <p v-if="descriptionOf(c)" class="desc">{{ descriptionOf(c) }}</p>
       </div>
       <div class="exp">

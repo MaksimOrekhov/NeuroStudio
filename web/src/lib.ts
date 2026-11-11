@@ -48,7 +48,7 @@ export function variantsLine(c: Collection): string | null {
   if (!counts.length) return null;
   const max = Math.max(...counts);
   if (max < 2) return null;
-  return Math.min(...counts) === max ? `× ${nPlural(max, W.variant)}` : `· вариантов на кадр: ${Math.min(...counts)}–${max}`;
+  return Math.min(...counts) === max ? `× ${nPlural(max, W.variant)}` : `вариантов на кадр: ${Math.min(...counts)}–${max}`;
 }
 
 /** True while the server is regenerating exactly this slot. */

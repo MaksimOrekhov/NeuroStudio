@@ -9,7 +9,7 @@ import { AutopilotRunner } from "../server/runner.ts";
 import { readCollection } from "../server/collections.ts";
 import { ComfyUnavailableError, FIELDS, loadWorkflow, type Graph } from "../src/comfy.ts";
 import { buildJobs, runCollection } from "../src/collection.ts";
-import { MAX_VARIANT } from "../src/regenerate.ts";
+import { MAX_VARIANT, io, writeAtomic } from "../src/regenerate.ts";
 import { planV3 } from "./fixtures/strictPlan.ts";
 
 const root = resolve(import.meta.dirname, "..");
@@ -493,7 +493,7 @@ test("UI: the editor loads the prompt of the variant being regenerated; one POST
   await S.loadCollections();
   assert.equal(c().frames.find((f) => f.frame === 3 && f.variant === 2)?.status, "done");
   assert.equal(c().selections["3"], 1); // Best not switched
-  assert.equal(lib.variantsLine(c()), "· вариантов на кадр: 1–2");
+  assert.equal(lib.variantsLine(c()), "вариантов на кадр: 1–2");
   assert.equal(lib.scenesOf(c())[2].variants.length, 2);
   // the editor of the new variant starts from ITS prompt
   await S.openRegen(c(), 3, 2);
@@ -527,4 +527,168 @@ test("UI: unavailable source and server refusals are shown in Russian with the t
   route = saved;
   assert.match(errors.messageForCode("VARIANT_LIMIT"), /99/);
   S.closeRegen();
+});
+
+// ---------- file system failures (review of PR #19) ----------
+
+const realIo = { ...io };
+const restoreIo = () => Object.assign(io, realIo);
+const errno = (code: string) => Object.assign(new Error(`${code}: injected`), { code });
+const manifestPath = (t: { dir: string }, id: string) => join(t.dir, id, "collection.json");
+
+test("FS: a failing rename never touches the existing collection.json; no temp file is left", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ns17-fs-"));
+  const file = join(dir, "collection.json");
+  await writeFile(file, JSON.stringify({ ok: 1 }));
+  io.rename = async () => {
+    throw errno("EPERM");
+  };
+  try {
+    await assert.rejects(writeAtomic(file, JSON.stringify({ ok: 2 })), /EPERM/);
+  } finally {
+    restoreIo();
+  }
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { ok: 1 }); // old manifest complete and valid
+  assert.deepEqual(await readdir(dir), ["collection.json"]);
+  // a write that dies half way (disk full) is the same: the old file stays
+  io.writeFile = (async (f: string, d: string) => {
+    await realIo.writeFile(f, String(d).slice(0, 3));
+    throw errno("ENOSPC");
+  }) as never;
+  try {
+    await assert.rejects(writeAtomic(file, JSON.stringify({ ok: 3 })), /ENOSPC/);
+  } finally {
+    restoreIo();
+  }
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { ok: 1 });
+  assert.deepEqual(await readdir(dir), ["collection.json"]);
+  // transient EPERM/EBUSY (the UI is reading the file) is retried
+  let n = 0;
+  io.rename = async (a: string, b: string) => {
+    if (++n <= 2) throw errno(n === 1 ? "EPERM" : "EBUSY");
+    return realIo.rename(a, b);
+  };
+  try {
+    await writeAtomic(file, JSON.stringify({ ok: 4 }));
+  } finally {
+    restoreIo();
+  }
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { ok: 4 });
+});
+
+test("FS: manifest cannot be saved when reserving a slot: nothing submitted, manifest byte-identical, no orphan files, lock released", async () => {
+  const t = await setup();
+  await t.make("f1");
+  const before = await readFile(manifestPath(t, "f1"), "utf8");
+  const files = (await readdir(join(t.dir, "f1"))).sort();
+  io.rename = async () => {
+    throw errno("EPERM");
+  };
+  let res;
+  try {
+    res = await t.post("f1", 2, { sourceVariant: 1 });
+  } finally {
+    restoreIo();
+  }
+  assert.equal(res.statusCode, 500);
+  assert.equal(await readFile(manifestPath(t, "f1"), "utf8"), before);
+  assert.deepEqual((await readdir(join(t.dir, "f1"))).sort(), files);
+  assert.equal(t.fake.submits.length, 0);
+  assert.equal(t.runner.active, false);
+  assert.equal((await t.post("f1", 2, { sourceVariant: 1 })).statusCode, 202); // works again afterwards
+  await t.settle();
+});
+
+test("FS: manifest save fails right after a successful submit: prompt_id is durable in the sidecar, nothing is resubmitted, the run reports it", async () => {
+  const t = await setup();
+  await t.make("f2");
+  const before = await readFile(manifestPath(t, "f2"), "utf8");
+  let open!: () => void;
+  t.fake.gate = new Promise<void>((r) => (open = r));
+  io.rename = async (a: string, b: string) => {
+    if (String(b).endsWith("collection.json") && t.fake.submits.length >= 1) throw errno("EIO"); // every manifest save after the submit fails
+    return realIo.rename(a, b);
+  };
+  try {
+    assert.equal((await t.post("f2", 3, { sourceVariant: 1, positive: "p2" })).statusCode, 202);
+    await until(() => t.fake.submits.length === 1);
+    await new Promise((r) => setTimeout(r, 50));
+    const side = await t.sidecar("f2", "scene-03-v02");
+    assert.equal(side.status, "submitted");
+    assert.equal(side.promptId, "pid-1"); // durable although collection.json could not be written
+    assert.equal(side.positive, "p2");
+    open();
+    await t.settle();
+  } finally {
+    restoreIo();
+  }
+  assert.equal(t.fake.submits.length, 1); // never resubmitted
+  const run = (await t.app.inject({ method: "GET", url: "/api/status", headers: H })).json().run;
+  assert.equal(run.status, "failed");
+  assert.match(run.error, /scene-03-v02\.png was created.*prompt_id pid-1.*collection\.json could not be updated/);
+  // the reservation happened before the failure, so the manifest holds the slot as pending; it is intact and valid
+  const m = JSON.parse(await readFile(manifestPath(t, "f2"), "utf8"));
+  assert.equal(m.frames.length, JSON.parse(before).frames.length + 1);
+  assert.ok(!(await readdir(join(t.dir, "f2"))).some((f) => f.endsWith(".tmp")));
+  // restart: reading recovers the finished slot from its sidecar (prompt_id and image), without any submit
+  const c = (await readCollection(t.dir, "f2"))!;
+  const slot = c.frames.find((f) => f.frame === 3 && f.variant === 2)!;
+  assert.equal(slot.status, "done");
+  assert.equal(slot.image, "scene-03-v02.png");
+  assert.equal(slot.promptId, "pid-1");
+  assert.equal(c.status, "done");
+  assert.equal(t.fake.submits.length, 1);
+});
+
+test("FS: job times out while the manifest cannot be saved, and a finished job whose last manifest save fails: both recovered from the sidecar", async () => {
+  const t = await setup();
+  await t.make("f3");
+  t.fake.waitError = new Error("Timed out waiting for prompt");
+  io.rename = async (a: string, b: string) => {
+    if (String(b).endsWith("collection.json") && t.fake.submits.length >= 1) throw errno("EPERM");
+    return realIo.rename(a, b);
+  };
+  try {
+    await t.post("f3", 1, { sourceVariant: 1 });
+    await t.settle();
+  } finally {
+    restoreIo();
+  }
+  assert.equal(t.fake.submits.length, 1);
+  const side = await t.sidecar("f3", "scene-01-v02");
+  assert.equal(side.status, "timeout");
+  assert.equal(side.promptId, "pid-1");
+  const slot = (await readCollection(t.dir, "f3"))!.frames.find((f) => f.frame === 1 && f.variant === 2)!;
+  assert.equal(slot.status, "timeout"); // the manifest still said "pending": the sidecar knows more
+  assert.equal(slot.promptId, "pid-1");
+  assert.equal(t.fake.submits.length, 1);
+
+  t.fake.waitError = undefined;
+  io.rename = async (a: string, b: string) => {
+    if (String(b).endsWith("collection.json") && t.fake.submits.length >= 2) throw errno("EIO");
+    return realIo.rename(a, b);
+  };
+  try {
+    await t.post("f3", 2, { sourceVariant: 1 });
+    await t.settle();
+  } finally {
+    restoreIo();
+  }
+  const c = (await readCollection(t.dir, "f3"))!;
+  const rec = c.frames.find((f) => f.frame === 2 && f.variant === 2)!;
+  assert.equal(rec.status, "done");
+  assert.equal(rec.image, "scene-02-v02.png");
+  assert.equal(rec.promptId, "pid-2");
+  assert.equal(c.status, "done");
+  assert.equal(t.fake.submits.length, 2);
+  assert.equal((await t.app.inject({ method: "GET", url: "/api/collections/f3/images/scene-02-v02.png", headers: H })).statusCode, 200);
+});
+
+test("library shows the actual variant counts, not the initial batch setting", () => {
+  const frames = (n: number[]) => n.flatMap((k, i) => Array.from({ length: k }, (_, v) => ({ frame: i + 1, variant: v + 1, model: "x", status: "done", seed: 1, image: "a.png" })));
+  const c = (n: number[], variations: number) => ({ id: "x", frameCount: n.length, variations, frames: frames(n) }) as never;
+  assert.equal(lib.variantsLine(c([2, 2, 2, 2], 2)), "× 2 варианта");
+  assert.equal(lib.variantsLine(c([2, 3, 2, 2], 2)), "вариантов на кадр: 2–3"); // regenerated: the stored `variations` (2) is not shown
+  assert.equal(lib.variantsLine(c([1, 1, 1, 1], 1)), null);
+  assert.equal(lib.variantsLine(c([1, 1, 2, 1], 1)), "вариантов на кадр: 1–2"); // was a one-variant collection
 });
