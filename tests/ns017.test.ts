@@ -564,7 +564,7 @@ test("FS: a failing rename never touches the existing collection.json; no temp f
   assert.deepEqual(await readdir(dir), ["collection.json"]);
   // transient EPERM/EBUSY (the UI is reading the file) is retried
   let n = 0;
-  io.rename = async (a: string, b: string) => {
+  io.rename = async (a, b) => {
     if (++n <= 2) throw errno(n === 1 ? "EPERM" : "EBUSY");
     return realIo.rename(a, b);
   };
@@ -605,7 +605,7 @@ test("FS: manifest save fails right after a successful submit: prompt_id is dura
   const before = await readFile(manifestPath(t, "f2"), "utf8");
   let open!: () => void;
   t.fake.gate = new Promise<void>((r) => (open = r));
-  io.rename = async (a: string, b: string) => {
+  io.rename = async (a, b) => {
     if (String(b).endsWith("collection.json") && t.fake.submits.length >= 1) throw errno("EIO"); // every manifest save after the submit fails
     return realIo.rename(a, b);
   };
@@ -644,7 +644,7 @@ test("FS: job times out while the manifest cannot be saved, and a finished job w
   const t = await setup();
   await t.make("f3");
   t.fake.waitError = new Error("Timed out waiting for prompt");
-  io.rename = async (a: string, b: string) => {
+  io.rename = async (a, b) => {
     if (String(b).endsWith("collection.json") && t.fake.submits.length >= 1) throw errno("EPERM");
     return realIo.rename(a, b);
   };
@@ -664,7 +664,7 @@ test("FS: job times out while the manifest cannot be saved, and a finished job w
   assert.equal(t.fake.submits.length, 1);
 
   t.fake.waitError = undefined;
-  io.rename = async (a: string, b: string) => {
+  io.rename = async (a, b) => {
     if (String(b).endsWith("collection.json") && t.fake.submits.length >= 2) throw errno("EIO");
     return realIo.rename(a, b);
   };
