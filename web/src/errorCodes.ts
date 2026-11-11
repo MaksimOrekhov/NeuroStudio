@@ -13,6 +13,7 @@ export const ERROR_CODES = [
   "SOURCE_UNAVAILABLE",
   "FEEDBACK_FILE_UNREADABLE",
   "COMPARISON_FILE_UNREADABLE",
+  "PREFERENCE_MEMORY_FAILED",
   "VARIANT_LIMIT",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];

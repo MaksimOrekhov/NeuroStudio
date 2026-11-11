@@ -8,6 +8,8 @@ import { buildJobs, runCollection, slugify, type Generation, type Manifest } fro
 import { MAX_FRAMES, autoMix, type ImageModelAssignment, type ImageModelId } from "../src/imageModels.ts";
 import { runErrorCode, type ErrorCode } from "../src/errors.ts";
 import { listCollections } from "./collections.ts";
+import { buildPreferenceContext } from "./promptEvolution.ts";
+import { writeAtomic } from "../src/regenerate.ts";
 import { loadSource, parseFrame, parsePositive, parseVariant, frameCountOf, reserve, runRegeneration } from "../src/regenerate.ts";
 
 export type RunStatus = "idle" | "planning" | "generating" | "completed" | "failed";
@@ -34,6 +36,8 @@ export interface RunState {
   currentFrame?: number;
   /** Set only while/after a targeted regeneration (NS-017) of one image: the same lock and state as a normal run. */
   regeneration?: { collectionId: string; frame: number; variant: number; sourceVariant: number };
+  /** NS-020: what Prompt Evolution did for this run (set once the memory has been built). */
+  evolution?: { enabled: boolean; applied: boolean; reason?: string; error?: string };
   /** Ids of collections already saved by this batch. */
   finished: string[];
   /** Original technical message. */
@@ -59,6 +63,8 @@ export interface RunnerDeps {
   /** ONE call for the whole batch. */
   plan: (o: BatchOptions) => Promise<BatchResult>;
   baseGraph: Graph;
+  /** For tests: replaces the local Preference Memory builder. */
+  preferenceContext?: typeof buildPreferenceContext;
   collectionsDir: string;
   batchesDir: string;
   log?: (s: string) => void;
@@ -75,6 +81,8 @@ export interface RunSettings {
   imageModels: ImageModelAssignment;
   composition?: Composition;
   codex: CodexSelection;
+  /** NS-020: add Preference Memory to the (single) Codex request. */
+  promptEvolution: boolean;
 }
 
 const deepFreeze = <T>(o: T): T => {
@@ -101,12 +109,13 @@ export class AutopilotRunner {
     composition?: Composition,
     codex: CodexSelection = {},
     images?: ImageModelAssignment,
+    promptEvolution = false,
   ): Promise<RunState> {
     if (this.busy) throw new RunError("ALREADY_RUNNING", "An Autopilot run is already in progress", 409);
     this.busy = true; // synchronous lock: a concurrent second call cannot pass this line
     const imageModels: ImageModelAssignment = images ?? { mode: "auto", models: autoMix(MAX_FRAMES) as ImageModelId[] };
     const settings: RunSettings = deepFreeze(
-      structuredClone({ theme, collections: count, frames: imageModels.models.length, variations, imageModels, composition, codex }),
+      structuredClone({ theme, collections: count, frames: imageModels.models.length, variations, imageModels, composition, codex, promptEvolution }),
     );
     try {
       await this.deps.client.systemStats();
@@ -187,7 +196,7 @@ export class AutopilotRunner {
   }
 
   private async execute(cfg: RunSettings) {
-    const { theme, collections: count, frames, variations, imageModels, composition, codex: sel } = cfg;
+    const { theme, collections: count, frames, variations, imageModels, composition, codex: sel, promptEvolution } = cfg;
     const { collectionsDir, batchesDir, log } = this.deps;
     const resolved = composition ? resolveComposition(composition, frames) : null;
     const generation: Generation = { theme: theme ?? null, imageModels, composition: resolved };
@@ -207,6 +216,7 @@ export class AutopilotRunner {
       variations,
       imageModels,
       composition: resolved, // what was requested per frame (after inheritance)
+      promptEvolution: { enabled: promptEvolution, applied: false },
       status: "running" as "running" | "done" | "failed",
       codex: codexMeta,
       collectionIds: [] as string[],
@@ -218,10 +228,35 @@ export class AutopilotRunner {
     await saveBatch();
     this.state = { ...this.state, runId: basename(batchDir) };
 
+    // NS-020: Preference Memory is built by local code only (no Codex). If that fails the run goes on WITHOUT it and says so
+    // (state.evolution + the snapshot); it never pretends to have been applied.
+    const evo: { enabled: boolean; applied: boolean; reason?: string; error?: string } = { enabled: promptEvolution, applied: false };
+    let preferences = "";
+    let ctx: Awaited<ReturnType<typeof buildPreferenceContext>> | null = null;
+    if (promptEvolution) {
+      try {
+        ctx = await (this.deps.preferenceContext ?? buildPreferenceContext)(collectionsDir);
+        preferences = ctx.text;
+        evo.applied = preferences.length > 0;
+        if (!evo.applied) evo.reason = ctx.memory.status === "empty" ? "no ratings yet" : "not enough consistent data yet";
+      } catch (e) {
+        evo.error = (e as Error).message;
+        evo.reason = "the preference memory could not be built; generation continues without it";
+      }
+    }
+    batch.promptEvolution = { enabled: evo.enabled, applied: evo.applied };
+    this.state = { ...this.state, evolution: evo };
+    // The snapshot of what this run used. Written once, before Codex is called, and never changed afterwards.
+    await writeAtomic(
+      join(batchDir, "preference-context.json"),
+      JSON.stringify({ version: 1, createdAt: new Date().toISOString(), enabled: evo.enabled, applied: evo.applied, reason: evo.reason, error: evo.error, memory: ctx?.memory ?? null, text: preferences }, null, 2),
+    );
+    await saveBatch();
+
     let r: BatchResult;
     try {
       const avoid = (await listCollections(collectionsDir, 20)).map((c) => c.title);
-      r = await this.deps.plan({ theme, avoid, count, composition, models: imageModels.models, model: sel.model, reasoningEffort: sel.reasoningEffort }); // all plans are validated before any GPU work
+      r = await this.deps.plan({ theme, avoid, count, composition, models: imageModels.models, model: sel.model, reasoningEffort: sel.reasoningEffort, ...(preferences ? { preferences } : {}) }); // all plans are validated before any GPU work
     } catch (e) {
       batch.status = "failed";
       batch.error = (e as Error).message;

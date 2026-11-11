@@ -16,6 +16,8 @@ export interface FormState {
   custom: string[];
   codexModel: string;
   codexEffort: string;
+  /** NS-020: take my ratings into account (off until the user switches it on). */
+  promptEvolution: boolean;
   global: Fields;
   /** Settings of all MAX_FRAMES scenes; only the first `frames` are ever sent. */
   scenes: Fields[];
@@ -31,6 +33,7 @@ export function defaultForm(): FormState {
     custom: assignModels("auto", MAX_FRAMES),
     codexModel: "",
     codexEffort: "",
+    promptEvolution: false,
     global: blank(AUTO),
     scenes: Array.from({ length: MAX_FRAMES }, () => blank(INHERIT)),
   };
@@ -68,5 +71,6 @@ export function buildStartRequest(f: FormState): Readonly<StartRequest> {
   }
   if (f.codexModel) req.codexModel = f.codexModel;
   if (f.codexEffort) req.codexReasoningEffort = f.codexEffort;
+  if (f.promptEvolution) req.promptEvolution = true; // off = the request is exactly what it was before NS-020
   return freeze(structuredClone(req));
 }

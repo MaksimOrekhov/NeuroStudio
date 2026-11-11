@@ -13,6 +13,7 @@ import { parseCount, parseFrames, parseVariations } from "../src/promptPlan.ts";
 import { resolveImageModels } from "../src/imageModels.ts";
 import type { ErrorCode } from "../src/errors.ts";
 import { ComparisonError, readComparisons, setComparison } from "./comparisons.ts";
+import { buildPreferenceContext } from "./promptEvolution.ts";
 import { listRuns } from "./runs.ts";
 import { RunError, type AutopilotRunner } from "./runner.ts";
 import { RegenError, frameCountOf, loadSource, parseFrame, parseVariant } from "../src/regenerate.ts";
@@ -72,11 +73,14 @@ export function buildApp(d: AppDeps) {
     let images: ReturnType<typeof resolveImageModels>;
     let composition: ReturnType<typeof parseComposition>;
     let codex: ReturnType<typeof resolveSelection>;
+    let promptEvolution = false;
     // Everything is validated here, before ComfyUI is contacted and before Codex is started.
     try {
       count = parseCount(body.collections);
       frames = parseFrames(body.frames);
       variations = parseVariations(body.variations);
+      if (body.promptEvolution !== undefined && typeof body.promptEvolution !== "boolean") throw new Error("promptEvolution must be a boolean");
+      promptEvolution = body.promptEvolution === true;
       images = resolveImageModels(body.imageModels, frames);
       composition = parseComposition(body.composition, frames);
       codex = body.codexModel == null && body.codexReasoningEffort == null ? {} : resolveSelection(await catalog(), body.codexModel, body.codexReasoningEffort); // old calls never touch the catalog
@@ -85,10 +89,20 @@ export function buildApp(d: AppDeps) {
     }
     const theme = typeof body.theme === "string" ? body.theme.trim().slice(0, 200) : "";
     try {
-      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations, composition, codex, images));
+      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations, composition, codex, images, promptEvolution));
     } catch (e) {
       if (e instanceof RunError) return fail(reply, e.httpStatus, e.code, e.message);
       throw e;
+    }
+  });
+
+  /** NS-020: what Prompt Evolution would send to Codex right now. Read-only, local analysis; Codex is never called. Same algorithm as a run. */
+  app.get("/api/prompt-evolution/preview", async (_req, reply) => {
+    try {
+      const { memory, text } = await buildPreferenceContext(d.collectionsDir);
+      return { memory, text, chars: text.length, applied: text.length > 0 };
+    } catch (e) {
+      return fail(reply, 500, "PREFERENCE_MEMORY_FAILED", (e as Error).message);
     }
   });
 

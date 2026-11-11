@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { AUTO, COMPOSITION_FIELDS, COMPOSITION_OPTIONS, INHERIT, type CompositionField } from "../../../src/composition";
 import { modelById } from "../models";
+import EvolutionBlock from "./EvolutionBlock.vue";
 import { AUTO_RU, effortRu, FIELD_RU, INHERIT_RU, optionRu } from "../ru";
 import { anyComposition, app, assigned, codexEfforts, codexModels, copySceneToAll, form, guided, resetComposition, resetScene, resolved, sceneOverrides, ui } from "../store";
 
@@ -30,7 +31,7 @@ const ownText = (n: number) => (n === 1 ? "1 своя настройка" : `${n
       <span class="chev" :class="{ open: ui.advancedOpen }" aria-hidden="true">›</span>
       <span class="title">
         <b>Дополнительные настройки</b>
-        <small>Генерация промптов · Композиция</small>
+        <small>Генерация промптов · Prompt Evolution · Композиция</small>
       </span>
       <span class="sum">
         <span class="chip">Codex: {{ codexSummary }}</span>
@@ -67,6 +68,8 @@ const ownText = (n: number) => (n === 1 ? "1 своя настройка" : `${n
         <p v-else-if="app.codex" class="muted small">Список моделей — из установленного Codex CLI<template v-if="app.codex.source === 'bundled'"> (встроенный перечень: кэш Codex не найден)</template>. Выбранное передаётся Codex явно; настройки Codex всё же могут влиять на результат.</p>
         <p v-else class="muted small">Загрузка списка моделей Codex…</p>
       </section>
+
+      <EvolutionBlock />
 
       <section class="block">
         <div class="bh split">
