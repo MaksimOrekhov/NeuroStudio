@@ -7,6 +7,8 @@ import {
   getCodexModels,
   getCollection,
   getCollections,
+  getComparisons,
+  saveComparison,
   getRuns,
   getStatus,
   getVariantPrompt,
@@ -18,11 +20,13 @@ import {
   type ApiStatus,
   type CodexModels,
   type Collection,
+  type Comparison,
   type Feedback,
   type ImageFeedback,
   type RunRecord,
 } from "./api";
 import { describeError, type UiError } from "./errors";
+import { pairKey } from "./arena";
 import { needsSelection } from "./lib";
 import { MAX_FRAMES, assignModels, autoMix, totalImages, type ModelMode } from "./models";
 import { blank, buildStartRequest, compositionGuided, defaultForm } from "./request";
@@ -537,3 +541,50 @@ export const toggleVerdict = (c: Collection, frame: number, variant: number, ver
   queueImageFeedback(c, frame, variant, (cur) => ({ verdict: cur?.verdict === verdict ? null : verdict, tags: [] }));
 export const toggleImageTag = (c: Collection, frame: number, variant: number, tag: string): Promise<void> =>
   queueImageFeedback(c, frame, variant, (cur) => (cur ? { verdict: cur.verdict, tags: cur.tags.includes(tag) ? cur.tags.filter((t) => t !== tag) : [...cur.tags, tag] } : null));
+
+// ---------- Image Arena (NS-019): pairwise comparisons of variants of one frame; independent of Best and image feedback ----------
+
+export const arena = reactive({
+  /** Saved verdicts of the open collection, keyed "frame:a-b". */
+  history: {} as Record<string, Comparison>,
+  loadedFor: null as string | null,
+  loading: false,
+  error: null as UiError | null,
+  saving: false,
+});
+let arenaSeq = 0;
+let arenaQueue: Promise<unknown> = Promise.resolve();
+
+export async function loadArena(id: string): Promise<void> {
+  const seq = ++arenaSeq;
+  Object.assign(arena, { history: {}, loadedFor: null, loading: true, error: null });
+  try {
+    const r = await getComparisons(id);
+    if (seq === arenaSeq) Object.assign(arena, { history: r.comparisons, loadedFor: id });
+  } catch (e) {
+    if (seq === arenaSeq) arena.error = describeError(e);
+  } finally {
+    if (seq === arenaSeq) arena.loading = false;
+  }
+}
+
+/** Saves one verdict (replacing an earlier one of the same pair). The history changes only after the server confirms.
+ * Saves are sent one at a time; returns true when the server accepted it. */
+export function submitComparison(id: string, frame: number, a: number, b: number, winner: number | null): Promise<boolean> {
+  const run = arenaQueue.then(async () => {
+    arena.saving = true;
+    arena.error = null;
+    try {
+      const r = await saveComparison(id, frame, { variantA: Math.min(a, b), variantB: Math.max(a, b), winnerVariant: winner });
+      if (arena.loadedFor === id) arena.history = { ...arena.history, [pairKey(frame, a, b)]: r.comparison };
+      return true;
+    } catch (e) {
+      arena.error = describeError(e);
+      return false;
+    } finally {
+      arena.saving = false;
+    }
+  });
+  arenaQueue = run;
+  return run;
+}

@@ -12,6 +12,7 @@ import { loadCatalog, resolveSelection, CodexSelectionError, effortLabel, type C
 import { parseCount, parseFrames, parseVariations } from "../src/promptPlan.ts";
 import { resolveImageModels } from "../src/imageModels.ts";
 import type { ErrorCode } from "../src/errors.ts";
+import { ComparisonError, readComparisons, setComparison } from "./comparisons.ts";
 import { listRuns } from "./runs.ts";
 import { RunError, type AutopilotRunner } from "./runner.ts";
 import { RegenError, frameCountOf, loadSource, parseFrame, parseVariant } from "../src/regenerate.ts";
@@ -187,6 +188,26 @@ export function buildApp(d: AppDeps) {
   app.get("/api/collections/:id/image-feedback", async (req, reply) => {
     const c = await readCollection(d.collectionsDir, (req.params as { id: string }).id, activeId());
     return c ? { images: c.imageFeedback } : fail(reply, 404, "COLLECTION_NOT_FOUND", "collection not found");
+  });
+
+  /** NS-019 Image Arena: pairwise verdicts between variants of one frame. */
+  app.get("/api/collections/:id/comparisons", async (req, reply) => {
+    try {
+      return { comparisons: await readComparisons(d.collectionsDir, (req.params as { id: string }).id) };
+    } catch (e) {
+      if (e instanceof ComparisonError) return fail(reply, e.httpStatus, e.code, e.message);
+      throw e;
+    }
+  });
+
+  app.put("/api/collections/:id/frames/:frame/comparisons", async (req, reply) => {
+    const p = req.params as { id: string; frame: string };
+    try {
+      return { comparison: await setComparison(d.collectionsDir, p.id, /^\d{1,3}$/.test(p.frame) ? Number(p.frame) : NaN, req.body ?? {}) };
+    } catch (e) {
+      if (e instanceof ComparisonError) return fail(reply, e.httpStatus, e.code, e.message);
+      throw e;
+    }
   });
 
   app.put("/api/collections/:id/feedback", async (req, reply) => {

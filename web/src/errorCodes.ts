@@ -12,6 +12,7 @@ export const ERROR_CODES = [
   "INVALID_REQUEST",
   "SOURCE_UNAVAILABLE",
   "FEEDBACK_FILE_UNREADABLE",
+  "COMPARISON_FILE_UNREADABLE",
   "VARIANT_LIMIT",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
