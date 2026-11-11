@@ -64,7 +64,7 @@ async function writeCollection(dir: string, s: Spec) {
       if (st === "done") {
         await writeFile(join(d, `${name}.png`), await placeholderPng(s.hue + f * 17, f, v));
         // the sidecar the real generator writes: it holds the ComfyUI graph that regeneration starts from (NS-017)
-        const graph = applyParams(base, { positive: `masterpiece, scene ${f}, ${s.id}, soft light`, negative: "lowres", seed: 100000 + f * 10 + v, unet: MODELS[s.models[f - 1] as keyof typeof MODELS], filenamePrefix: `NeuroStudio/${s.id}/${name}` });
+        const graph = applyParams(base, { positive: `masterpiece, scene ${f}, ${s.id}, soft light${v >= 3 ? `, variant ${v} (edited)` : ""}`, negative: "lowres", seed: 100000 + f * 10 + v, unet: MODELS[s.models[f - 1] as keyof typeof MODELS], filenamePrefix: `NeuroStudio/${s.id}/${name}` });
         await writeFile(join(d, `${name}.json`), JSON.stringify({ frame: f, model: s.models[f - 1], variant: v, seed: 100000 + f * 10 + v, graph }));
       }
     }
@@ -134,6 +134,8 @@ export async function createFixture(base?: string) {
     { id: "2026-11-08-lemon", title: "Lemon Grove Siesta", titleRu: "Сиеста в лимонной роще", hue: 70, frameCount: 4, variations: 1, models: [C, C, D, D], status: "failed", states: { "1-1": "done", "2-1": "done", "3-1": "failed", "4-1": "pending" }, createdAt: "2026-11-08T18:00:00Z", generation: true },
     // "running" on disk, but no run is active in this process: interrupted
     { id: "2026-11-07-balcony", title: "Balcony at Dusk", titleRu: "Балкон в сумерках", hue: 20, frameCount: 2, variations: 2, models: [C, D], status: "running", states: { "1-1": "done", "1-2": "done", "2-1": "submitted", "2-2": "pending" }, createdAt: "2026-11-07T20:00:00Z", generation: true },
+    // Image Arena demo: one frame with 4 variants to compare (NS-019)
+    { id: "2026-11-11-arena", title: "Arena Demo", titleRu: "Демо для сравнения", hue: 100, frameCount: 2, variations: 4, models: [C, D], createdAt: "2026-11-11T12:00:00Z", generation: true },
     // a very long title
     { id: "2026-11-06-long", title: "An Extremely Long Original Title That Keeps Going", titleRu: "Очень длинное название коллекции, которое должно аккуратно переноситься по строкам и не ломать сетку библиотеки", hue: 300, frameCount: 4, variations: 1, models: [C, C, D, D], createdAt: "2026-11-06T10:00:00Z", generation: true },
   ];

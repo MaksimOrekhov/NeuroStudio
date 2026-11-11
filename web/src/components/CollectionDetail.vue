@@ -6,6 +6,7 @@ import { badgeOf, descriptionOf, exportInfo, isRegenerating, pad2, scenesOf, tit
 import { modelById } from "../models";
 import { AUTO_RU, BAD_TAGS, dateFullRu, effortRu, FIELD_RU, GOOD_TAGS, nPlural, ofImages, optionRu, secondsRu, W } from "../ru";
 import { bestBusy, bestError, chooseBest, draftOf, go, imageFbError, openRegen, rate, regen, run, running, saveNote, toggleTag } from "../store";
+import ImageArena from "./ImageArena.vue";
 import ImageRating from "./ImageRating.vue";
 import RegenerateDialog from "./RegenerateDialog.vue";
 import Thumb from "./Thumb.vue";
@@ -29,6 +30,8 @@ const stateText = (status: string, f?: Frame) =>
   f && isRegenerating(run.value, props.c, f) ? "Перегенерируется…" : status === "pending" ? (props.c.status === "running" ? "В очереди" : "Не создано") : status === "submitted" ? (props.c.status === "running" ? "Генерируется…" : "Состояние неизвестно") : status === "timeout" ? "Состояние неизвестно" : "Ошибка";
 
 const viewer = ref<{ frame: number; variant: number } | null>(null);
+/** Frame whose variants are being compared in the Arena (NS-019). */
+const arenaFrame = ref<number | null>(null);
 
 // A regenerated image that has just been saved becomes the one shown for its frame (Best is not changed).
 const regenImage = computed(() => {
@@ -135,6 +138,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
             <button v-if="f.image" class="btn sm sel" :class="{ ok: isBest(s.frame, f.variant) }" :disabled="bestBusy[c.id]" @click="chooseBest(c, s.frame, f.variant)">
               {{ isBest(s.frame, f.variant) ? "✓ Лучший" : s.variants.length > 1 ? `Выбрать вариант ${f.variant} лучшим` : "Выбрать лучшим" }}
             </button>
+            <button v-if="s.variants.filter((v) => v.image).length > 1" class="btn sm sel" title="Сравнить варианты этого кадра попарно" @click="arenaFrame = s.frame">Сравнить варианты</button>
             <ImageRating v-if="f.image" compact :c="c" :frame="s.frame" :variant="f.variant" />
             <button
               v-if="f.image"
@@ -208,6 +212,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
     </div>
 
     <RegenerateDialog v-if="regen.target && regen.target.id === c.id" />
+    <ImageArena v-if="arenaFrame !== null" :c="c" :frame="arenaFrame" @close="arenaFrame = null" />
     <Viewer v-if="viewer" :c="c" :frame="viewer.frame" :variant="viewer.variant" @close="viewer = null" @move="(f, v) => (viewer = { frame: f, variant: v })" />
   </div>
 </template>

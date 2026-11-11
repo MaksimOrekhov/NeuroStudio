@@ -36,6 +36,15 @@ export interface ImageFeedback {
   updatedAt: string;
 }
 
+/** NS-019: the verdict between two variants of one frame; variantA < variantB, winnerVariant null = equal. */
+export interface Comparison {
+  frame: number;
+  variantA: number;
+  variantB: number;
+  winnerVariant: number | null;
+  updatedAt: string;
+}
+
 export interface ExportStatus {
   ready: boolean;
   resolved: number;
@@ -197,3 +206,7 @@ export const getCodexModels = () => json<CodexModels>("/api/codex/models");
 
 export const saveImageFeedback = (id: string, frame: number, variant: number, fb: { verdict: "like" | "dislike" | null; tags: string[] }) =>
   json<{ feedback: ImageFeedback | null }>(`/api/collections/${encodeURIComponent(id)}/frames/${frame}/variants/${variant}/feedback`, put(fb));
+
+export const getComparisons = (id: string) => json<{ comparisons: Record<string, Comparison> }>(`/api/collections/${encodeURIComponent(id)}/comparisons`);
+export const saveComparison = (id: string, frame: number, body: { variantA: number; variantB: number; winnerVariant: number | null }) =>
+  json<{ comparison: Comparison }>(`/api/collections/${encodeURIComponent(id)}/frames/${frame}/comparisons`, put(body));
