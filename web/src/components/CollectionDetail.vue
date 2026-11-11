@@ -5,7 +5,8 @@ import { exportUrl, imageUrl, type Collection, type Frame } from "../api";
 import { badgeOf, descriptionOf, exportInfo, isRegenerating, pad2, scenesOf, titleOf, unknownFrames, variantsLine, type Scene } from "../lib";
 import { modelById } from "../models";
 import { AUTO_RU, BAD_TAGS, dateFullRu, effortRu, FIELD_RU, GOOD_TAGS, nPlural, ofImages, optionRu, secondsRu, W } from "../ru";
-import { bestBusy, bestError, chooseBest, draftOf, go, openRegen, rate, regen, run, running, saveNote, toggleTag } from "../store";
+import { bestBusy, bestError, chooseBest, draftOf, go, imageFbError, openRegen, rate, regen, run, running, saveNote, toggleTag } from "../store";
+import ImageRating from "./ImageRating.vue";
 import RegenerateDialog from "./RegenerateDialog.vue";
 import Thumb from "./Thumb.vue";
 import Viewer from "./Viewer.vue";
@@ -96,6 +97,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
       </span>
     </div>
 
+    <p v-if="imageFbError[c.id]" class="note bad">Не удалось сохранить оценку изображения: {{ imageFbError[c.id] }}</p>
     <p v-if="bestError[c.id]" class="note bad">Не удалось сохранить выбор: {{ bestError[c.id] }}</p>
 
     <div class="layout">
@@ -132,6 +134,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
             <button v-if="f.image" class="btn sm sel" :class="{ ok: isBest(s.frame, f.variant) }" :disabled="bestBusy[c.id]" @click="chooseBest(c, s.frame, f.variant)">
               {{ isBest(s.frame, f.variant) ? "✓ Лучший" : s.variants.length > 1 ? `Выбрать вариант ${f.variant} лучшим` : "Выбрать лучшим" }}
             </button>
+            <ImageRating v-if="f.image" compact :c="c" :frame="s.frame" :variant="f.variant" />
             <button
               v-if="f.image"
               class="btn sm sel"

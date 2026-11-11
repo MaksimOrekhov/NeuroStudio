@@ -30,6 +30,12 @@ export interface Feedback {
   updatedAt: string;
 }
 
+export interface ImageFeedback {
+  verdict: "like" | "dislike";
+  tags: string[];
+  updatedAt: string;
+}
+
 export interface ExportStatus {
   ready: boolean;
   resolved: number;
@@ -59,6 +65,8 @@ export interface Collection {
   generation?: GenerationMeta;
   selections: Record<string, number>;
   feedback: Feedback | null;
+  /** Quality verdict and reasons per image, keyed "frame-variant". */
+  imageFeedback: Record<string, ImageFeedback>;
   export: ExportStatus;
   codex?: { seconds?: number; tokens?: unknown; model?: string | null; reasoningEffort?: string | null };
   comfySeconds?: number;
@@ -184,3 +192,6 @@ export interface CodexModels {
   models: { id: string; name: string; defaultEffort?: string; efforts: { id: string; label: string }[] }[];
 }
 export const getCodexModels = () => json<CodexModels>("/api/codex/models");
+
+export const saveImageFeedback = (id: string, frame: number, variant: number, fb: { verdict: "like" | "dislike" | null; tags: string[] }) =>
+  json<{ feedback: ImageFeedback | null }>(`/api/collections/${encodeURIComponent(id)}/frames/${frame}/variants/${variant}/feedback`, put(fb));

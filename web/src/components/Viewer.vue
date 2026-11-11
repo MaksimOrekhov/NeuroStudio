@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, onMounted } from "vue";
 import { imageUrl, type Collection } from "../api";
 import { pad2, summaryOf, titleOf } from "../lib";
 import { modelById } from "../models";
-import { bestBusy, chooseBest } from "../store";
+import { bestBusy, chooseBest, imageFbError } from "../store";
+import ImageRating from "./ImageRating.vue";
 
 const props = defineProps<{ c: Collection; frame: number; variant: number }>();
 const emit = defineEmits<{ close: []; move: [frame: number, variant: number] }>();
@@ -46,6 +47,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           <button class="btn ghost" @click="emit('close')">Закрыть <kbd>Esc</kbd></button>
         </div>
       </div>
+      <div class="rt"><ImageRating :c="c" :frame="f.frame" :variant="f.variant" /></div>
+      <p v-if="imageFbError[c.id]" class="note bad">{{ imageFbError[c.id] }}</p>
       <p class="muted small pos">{{ idx + 1 }} / {{ images.length }} · ← → — листать</p>
     </div>
     <button class="nav" aria-label="Следующее изображение" @click="step(1)">›</button>
@@ -64,6 +67,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .acts { display: flex; gap: 6px; flex: none; }
 kbd { font: 11px/1 inherit; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--line-2); color: var(--muted); }
 .pos { text-align: center; }
+.rt { width: calc((100vh - 200px) * 2 / 3); min-width: 560px; margin: 0 auto; }
 .nav { flex: none; width: 52px; height: 52px; border-radius: 50%; border: 1px solid var(--line-2); background: var(--panel); color: var(--text); font-size: 28px; line-height: 1; }
 .nav:hover { border-color: var(--accent); }
 </style>

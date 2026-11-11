@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import Fastify, { type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { ComfyClient } from "../src/comfy.ts";
-import { FeedbackError, SelectionError, listCollections, readCollection, safeImagePath, setFeedback, setSelection } from "./collections.ts";
+import { FeedbackError, ImageFeedbackError, SelectionError, setImageFeedback, listCollections, readCollection, safeImagePath, setFeedback, setSelection } from "./collections.ts";
 import { ExportError, planExport, zipStream } from "./export.ts";
 import { getThumbnail } from "./thumbs.ts";
 import { parseComposition } from "../src/composition.ts";
@@ -169,6 +169,23 @@ export function buildApp(d: AppDeps) {
       if (e instanceof SelectionError) return e.message === "collection not found" ? fail(reply, 404, "COLLECTION_NOT_FOUND", e.message) : fail(reply, 400, "INVALID_REQUEST", e.message);
       throw e;
     }
+  });
+
+  /** NS-018: quality verdict + reasons for one image. { verdict: "like"|"dislike"|null, tags?: string[] }; null removes it. */
+  app.put("/api/collections/:id/frames/:frame/variants/:variant/feedback", async (req, reply) => {
+    const p = req.params as { id: string; frame: string; variant: string };
+    const num = (s: string) => (/^\d{1,3}$/.test(s) ? Number(s) : NaN);
+    try {
+      return { frame: num(p.frame), variant: num(p.variant), feedback: await setImageFeedback(d.collectionsDir, p.id, num(p.frame), num(p.variant), req.body ?? {}) };
+    } catch (e) {
+      if (e instanceof ImageFeedbackError) return e.message === "collection not found" ? fail(reply, 404, "COLLECTION_NOT_FOUND", e.message) : fail(reply, 400, "INVALID_REQUEST", e.message);
+      throw e;
+    }
+  });
+
+  app.get("/api/collections/:id/image-feedback", async (req, reply) => {
+    const c = await readCollection(d.collectionsDir, (req.params as { id: string }).id, activeId());
+    return c ? { images: c.imageFeedback } : fail(reply, 404, "COLLECTION_NOT_FOUND", "collection not found");
   });
 
   app.put("/api/collections/:id/feedback", async (req, reply) => {

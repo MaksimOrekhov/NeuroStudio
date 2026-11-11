@@ -72,6 +72,23 @@ export const GOOD_TAGS = [
   ["beautiful_lighting", "Красивый свет"],
   ["original_concept", "Оригинальная идея"],
 ] as const;
+/** NS-018 per-image reasons (ids are stored in image-feedback.json). */
+export const IMAGE_GOOD_TAGS = [
+  ["beautiful_look", "Красивый образ"],
+  ["great_outfit", "Удачный наряд"],
+  ["good_composition", "Хорошая композиция"],
+  ["beautiful_lighting", "Красивый свет"],
+  ["original_idea", "Оригинальная идея"],
+] as const;
+export const IMAGE_BAD_TAGS = [
+  ["anatomy", "Анатомия"],
+  ["face", "Лицо"],
+  ["outfit", "Одежда"],
+  ["composition", "Композиция"],
+  ["lighting", "Освещение"],
+  ["concept_mismatch", "Не соответствует концепции"],
+  ["repetitive_look", "Повторяющийся образ"],
+] as const;
 export const BAD_TAGS = [
   ["bad_anatomy", "Плохая анатомия"],
   ["inconsistent_heroine", "Героиня не похожа между кадрами"],

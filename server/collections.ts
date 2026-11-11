@@ -2,6 +2,7 @@ import { readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/prom
 import { join, resolve, sep } from "node:path";
 import type { Generation, Manifest } from "../src/collection.ts";
 import type { PromptPlan } from "../src/promptPlan.ts";
+import { writeAtomic } from "../src/regenerate.ts";
 
 export interface FrameView {
   frame: number;
@@ -44,6 +45,8 @@ export interface CollectionView {
   selections: Record<string, number>;
   /** Subjective quality feedback for the whole collection (feedback.json); null when none was given. */
   feedback: Feedback | null;
+  /** NS-018: quality verdict and tags per image, keyed "frame-variant" (image-feedback.json); {} when none. */
+  imageFeedback: Record<string, ImageFeedback>;
   /** Whether the final images (one per frame) can be exported as a ZIP (see export.ts). */
   export: ExportStatus;
   codex?: Manifest["codex"];
@@ -63,6 +66,19 @@ export const FEEDBACK_TAGS = [
   "weak_concept",
 ] as const;
 export const FEEDBACK_NOTE_MAX = 500;
+
+export const IMAGE_TAGS = {
+  like: ["beautiful_look", "great_outfit", "good_composition", "beautiful_lighting", "original_idea"],
+  dislike: ["anatomy", "face", "outfit", "composition", "lighting", "concept_mismatch", "repetitive_look"],
+} as const;
+export type Verdict = keyof typeof IMAGE_TAGS;
+
+/** NS-018. Only the verdict and reasons: prompt, graph, seed and PNG are found through (frame, variant) in the existing files. */
+export interface ImageFeedback {
+  verdict: Verdict;
+  tags: string[];
+  updatedAt: string;
+}
 
 /**
  * Stored in <collection>/feedback.json. Linked to the Prompt Plan and the Best picks only through the collection id
@@ -124,6 +140,21 @@ async function readSelections(dir: string, id: string): Promise<Record<string, n
     return Object.fromEntries(Object.entries(raw).filter(([k, v]) => /^[1-4]$/.test(k) && Number.isInteger(v))) as Record<string, number>;
   } catch {
     return {};
+  }
+}
+
+async function readImageFeedback(dir: string, id: string): Promise<Record<string, ImageFeedback>> {
+  try {
+    const raw = JSON.parse(await readFile(join(dir, id, "image-feedback.json"), "utf8")) as { images?: Record<string, Partial<ImageFeedback>> };
+    const out: Record<string, ImageFeedback> = {};
+    for (const [k, v] of Object.entries(raw.images ?? {})) {
+      if (!/^[1-4]-\d{1,2}$/.test(k) || !v || (v.verdict !== "like" && v.verdict !== "dislike")) continue;
+      const allowed = IMAGE_TAGS[v.verdict] as readonly string[];
+      out[k] = { verdict: v.verdict, tags: Array.isArray(v.tags) ? v.tags.filter((t): t is string => allowed.includes(t as string)) : [], updatedAt: typeof v.updatedAt === "string" ? v.updatedAt : "" };
+    }
+    return out;
+  } catch {
+    return {}; // missing (old collection) or unreadable: behaves as "no image feedback"
   }
 }
 
@@ -207,6 +238,7 @@ export async function readCollection(dir: string, id: string, activeId?: string)
       generation: m.generation,
       selections,
       feedback: await readFeedback(dir, id),
+      imageFeedback: await readImageFeedback(dir, id),
       export: { ready: false, resolved: 0 },
       codex: m.codex,
       comfySeconds: m.comfySeconds,
@@ -288,4 +320,46 @@ export async function setFeedback(dir: string, id: string, input: unknown): Prom
   await writeFile(file + ".tmp", JSON.stringify(fb, null, 2));
   await rename(file + ".tmp", file);
   return fb;
+}
+
+export class ImageFeedbackError extends Error {}
+
+const imageFeedbackLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Sets (verdict "like"/"dislike" + optional tags of that verdict) or removes (verdict null) the feedback of ONE finished image.
+ * Read-modify-write of image-feedback.json is serialised per collection and written atomically; other files are never touched.
+ */
+export function setImageFeedback(dir: string, id: string, frame: unknown, variant: unknown, input: unknown): Promise<ImageFeedback | null> {
+  const key = `${dir}\0${id}`;
+  const run = (imageFeedbackLocks.get(key) ?? Promise.resolve()).catch(() => undefined).then(() => apply(dir, id, frame, variant, input));
+  imageFeedbackLocks.set(key, run);
+  return run;
+}
+
+async function apply(dir: string, id: string, frame: unknown, variant: unknown, input: unknown): Promise<ImageFeedback | null> {
+  const c = await readCollection(dir, id);
+  if (!c) throw new ImageFeedbackError("collection not found");
+  if (typeof frame !== "number" || !Number.isInteger(frame) || frame < 1 || frame > c.frameCount) throw new ImageFeedbackError(`frame must be 1-${c.frameCount}`);
+  if (typeof variant !== "number" || !Number.isInteger(variant) || variant < 1) throw new ImageFeedbackError("variant must be a positive integer");
+  if (!c.frames.some((f) => f.frame === frame && f.variant === variant && f.image)) throw new ImageFeedbackError("that image does not exist yet");
+  if (typeof input !== "object" || input === null || Array.isArray(input)) throw new ImageFeedbackError("body must be an object");
+  const { verdict = null, tags = [] } = input as Record<string, unknown>;
+  if (verdict !== null && verdict !== "like" && verdict !== "dislike") throw new ImageFeedbackError('verdict must be "like", "dislike" or null');
+  if (!Array.isArray(tags)) throw new ImageFeedbackError("tags must be an array");
+  const all = { ...c.imageFeedback };
+  const k = `${frame}-${variant}`;
+  let entry: ImageFeedback | null = null;
+  if (verdict === null) {
+    delete all[k]; // removing the rating also removes its reasons
+  } else {
+    const allowed = IMAGE_TAGS[verdict] as readonly string[];
+    if (tags.some((t) => typeof t !== "string" || !allowed.includes(t))) throw new ImageFeedbackError(`unknown tag for "${verdict}"`);
+    entry = { verdict, tags: (IMAGE_TAGS[verdict] as readonly string[]).filter((t) => tags.includes(t)), updatedAt: new Date().toISOString() };
+    all[k] = entry;
+  }
+  const file = join(dir, id, "image-feedback.json");
+  if (!Object.keys(all).length) await unlink(file).catch(() => undefined);
+  else await writeAtomic(file, JSON.stringify({ version: 1, images: all }, null, 2));
+  return entry;
 }

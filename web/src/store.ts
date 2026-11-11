@@ -12,6 +12,7 @@ import {
   getVariantPrompt,
   startRegeneration,
   saveFeedback,
+  saveImageFeedback,
   selectBest as apiSelectBest,
   startRun,
   type ApiStatus,
@@ -497,4 +498,45 @@ export function toggleTag(c: Collection, tag: string) {
 export function saveNote(c: Collection) {
   const d = draftOf(c);
   if (d.note !== (c.feedback?.note ?? "")) void persistFeedback(c);
+}
+
+// ---------- Image feedback (NS-018): like / dislike + reasons for one image; independent of Best ----------
+
+export const imageFbBusy = reactive<Record<string, boolean>>({});
+export const imageFbError = reactive<Record<string, string>>({});
+const fbQueue = new Map<string, Promise<void>>();
+
+/** Sets or clears (verdict null) the feedback of one image. Requests of one collection are sent one at a time, in click order;
+ * the UI shows the server's answer, never a guess. */
+export function rateImage(c: Collection, frame: number, variant: number, verdict: "like" | "dislike" | null, tags: string[] = []): Promise<void> {
+  const next = (fbQueue.get(c.id) ?? Promise.resolve()).then(async () => {
+    imageFbBusy[c.id] = true;
+    delete imageFbError[c.id];
+    try {
+      const r = await saveImageFeedback(c.id, frame, variant, { verdict, tags });
+      const cur = live(c);
+      cur.imageFeedback = { ...cur.imageFeedback };
+      if (r.feedback) cur.imageFeedback[`${frame}-${variant}`] = r.feedback;
+      else delete cur.imageFeedback[`${frame}-${variant}`];
+    } catch (e) {
+      const u = describeError(e);
+      imageFbError[c.id] = u.message + (u.details ? ` (${u.details})` : "");
+    } finally {
+      imageFbBusy[c.id] = false;
+    }
+  });
+  fbQueue.set(c.id, next);
+  return next;
+}
+
+/** Click on "Нравится"/"Не нравится": the same verdict again removes the rating; switching verdict drops tags of the other kind. */
+export function toggleVerdict(c: Collection, frame: number, variant: number, verdict: "like" | "dislike"): Promise<void> {
+  const cur = c.imageFeedback?.[`${frame}-${variant}`];
+  return rateImage(c, frame, variant, cur?.verdict === verdict ? null : verdict, []);
+}
+export function toggleImageTag(c: Collection, frame: number, variant: number, tag: string): Promise<void> {
+  const cur = c.imageFeedback?.[`${frame}-${variant}`];
+  if (!cur) return Promise.resolve();
+  const tags = cur.tags.includes(tag) ? cur.tags.filter((t) => t !== tag) : [...cur.tags, tag];
+  return rateImage(c, frame, variant, cur.verdict, tags);
 }

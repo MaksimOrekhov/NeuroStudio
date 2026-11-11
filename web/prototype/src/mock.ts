@@ -64,6 +64,7 @@ export function makeCollection(s: Spec): ProtoCollection {
     variations: s.variations,
     selections: s.selections ?? {},
     feedback: fb ? { version: 1, rating: fb.rating ?? null, tags: fb.tags ?? [], note: fb.note ?? "", updatedAt: created.toISOString() } : null,
+    imageFeedback: {},
     export: { ready: false, resolved: 0 },
     frameCount: s.frames,
     hue: s.hue,
