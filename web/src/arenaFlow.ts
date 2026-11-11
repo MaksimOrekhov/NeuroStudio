@@ -4,6 +4,8 @@ import { computed, reactive, ref } from "vue";
 import { donePairs, openPairs, pairKey, statsOf } from "./arena";
 import { arena, closeArena, loadArena, submitComparison } from "./store";
 
+export type ArenaFlow = ReturnType<typeof createArenaFlow>;
+
 export function createArenaFlow(opts: { id: string; frame: number; variants: () => number[] }) {
   const { id, frame } = opts;
   const open = computed(() => openPairs(opts.variants(), frame, arena.history));

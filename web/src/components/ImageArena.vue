@@ -2,25 +2,26 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { getVariantPrompt, imageUrl, type VariantPrompt } from "../api";
 import { variantsOfFrame } from "../arena";
-import { createArenaFlow } from "../arenaFlow";
+import { createArenaFlow, type ArenaFlow } from "../arenaFlow";
 import { describeError } from "../errors";
 import { pad2, titleOf } from "../lib";
 import { modelById } from "../models";
 import { arena } from "../store";
 import ErrorNote from "./ErrorNote.vue";
 
-const props = defineProps<{ c: import("../api").Collection; frame: number }>();
+const props = defineProps<{ c: import("../api").Collection; frame: number; /** Supplied by tests; normally the Arena creates and runs its own flow. */ flow?: ArenaFlow }>();
 const emit = defineEmits<{ close: [] }>();
 
 const variants = computed(() => variantsOfFrame(props.c, props.frame));
-const flow = createArenaFlow({ id: props.c.id, frame: props.frame, variants: () => variants.value });
+const own = !props.flow;
+const flow = props.flow ?? createArenaFlow({ id: props.c.id, frame: props.frame, variants: () => variants.value });
 const { open, done, stats, current, editing, left, right, existing, skippedLeft } = flow;
 const showList = ref(false);
 
 const slot = (v: number) => props.c.frames.find((f) => f.frame === props.frame && f.variant === v);
 
-onMounted(() => flow.start());
-onBeforeUnmount(() => flow.dispose()); // late answers of this session must not reach the next one
+onMounted(() => own && flow.start());
+onBeforeUnmount(() => own && flow.dispose()); // late answers of this session must not reach the next one
 // A variant that appears later (regeneration finished) adds its pairs; the screen only moves on when nothing is being decided.
 watch(
   () => variants.value.join(","),
@@ -87,7 +88,8 @@ const progress = computed(() => `${done.value.length} из ${done.value.length +
       <ErrorNote :error="arena.error" />
       <p v-if="arena.loading" class="muted">Загрузка сравнений…</p>
 
-      <template v-else-if="!arena.error">
+      <!-- The comparison UI belongs to a successfully LOADED Arena. A failed save (arena.error) keeps it on screen so the user can repeat; only a failed first load hides it. -->
+      <template v-else-if="arena.loadedFor === c.id">
         <p v-if="variants.length < 2" class="muted">Для сравнения нужно хотя бы два готовых варианта этого кадра.</p>
 
         <div v-else-if="current" class="stage" :class="{ tight: showPrompts || showList }">
