@@ -9,6 +9,8 @@ import {
   getCollections,
   getRuns,
   getStatus,
+  getVariantPrompt,
+  startRegeneration,
   saveFeedback,
   selectBest as apiSelectBest,
   startRun,
@@ -345,6 +347,73 @@ export async function startGeneration(): Promise<boolean> {
     return false;
   } finally {
     app.starting = false;
+  }
+}
+
+// ---------- Targeted regeneration (NS-017): one new variant of one frame, same server lock as a normal run ----------
+
+export const regen = reactive({
+  /** The variant whose prompt is being edited; null = dialog closed. */
+  target: null as { id: string; frame: number; variant: number } | null,
+  loading: false,
+  available: false,
+  model: "",
+  /** Prompt the variant was actually generated with / what the user is editing. */
+  original: "",
+  text: "",
+  edited: false,
+  submitting: false,
+  error: null as UiError | null,
+});
+
+let regenSeq = 0; // identifies the latest open request (a reactive object is a proxy, so it cannot be compared by identity)
+export async function openRegen(c: Collection, frame: number, variant: number): Promise<void> {
+  const seq = ++regenSeq;
+  Object.assign(regen, { target: { id: c.id, frame, variant }, loading: true, available: false, model: "", original: "", text: "", edited: false, submitting: false, error: null });
+  try {
+    const r = await getVariantPrompt(c.id, frame, variant);
+    if (seq !== regenSeq || !regen.target) return; // closed or reopened for another variant meanwhile
+    if (r.available) Object.assign(regen, { available: true, model: r.model, original: r.positive, text: r.positive, edited: r.promptEdited });
+    else regen.error = describeError(new ApiError(r.reason, r.code, 409));
+  } catch (e) {
+    if (seq === regenSeq && regen.target) regen.error = describeError(e);
+  } finally {
+    if (seq === regenSeq) regen.loading = false;
+  }
+}
+export function closeRegen() {
+  regenSeq++;
+  regen.target = null;
+}
+export const resetRegenText = () => {
+  regen.text = regen.original;
+};
+
+/** Sends ONE request. Returns true when the server accepted it (202); the result then arrives through status polling. */
+export async function submitRegen(): Promise<boolean> {
+  const t = regen.target;
+  if (!t || regen.submitting || running.value || !regen.available) return false;
+  if (!regen.text.trim()) {
+    regen.error = { message: "Промпт не может быть пустым." };
+    return false;
+  }
+  regen.submitting = true;
+  regen.error = null;
+  try {
+    const changed = regen.text.trim() !== regen.original.trim();
+    const state = await startRegeneration(t.id, t.frame, { sourceVariant: t.variant, ...(changed ? { positive: regen.text } : {}) });
+    statusSeq++; // a status request sent before the 202 is stale now
+    app.status = { comfy: app.status?.comfy ?? { ok: true }, run: state };
+    app.connection = "ok";
+    void loadCollections(); // the new slot is already in collection.json
+    if (regen.target?.id === t.id && regen.target.frame === t.frame && regen.target.variant === t.variant) regen.target = null;
+    return true;
+  } catch (e) {
+    regen.error = describeError(e);
+    if (e instanceof ApiError && e.code === "ALREADY_RUNNING") void refreshStatus();
+    return false;
+  } finally {
+    regen.submitting = false;
   }
 }
 

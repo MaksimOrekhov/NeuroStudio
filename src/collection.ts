@@ -65,6 +65,10 @@ export interface FrameRecord {
   png?: string;
   seconds?: number;
   error?: string;
+  /** NS-017: set only on variants made by targeted regeneration: the variant this one was created from. */
+  sourceVariant?: number;
+  /** NS-017: true when the positive prompt was edited before regenerating (absent otherwise). */
+  promptEdited?: boolean;
 }
 
 export interface Generation {

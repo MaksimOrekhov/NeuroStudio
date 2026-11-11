@@ -1,4 +1,4 @@
-import { readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { Generation, Manifest } from "../src/collection.ts";
 import type { PromptPlan } from "../src/promptPlan.ts";
@@ -16,6 +16,10 @@ export interface FrameView {
   promptId?: string;
   image?: string; // file name, served by /api/collections/:id/images/:file
   error?: string;
+  /** NS-017: variant this one was regenerated from (absent for the original variants). */
+  sourceVariant?: number;
+  /** NS-017: the prompt was edited before regenerating. */
+  promptEdited?: boolean;
 }
 
 export interface CollectionView {
@@ -157,9 +161,36 @@ export async function readCollection(dir: string, id: string, activeId?: string)
         promptId: f.promptId,
         image: f.status === "done" ? f.png : undefined,
         error: f.error,
+        sourceVariant: f.sourceVariant,
+        promptEdited: f.promptEdited,
       }))
       .sort((a, b) => a.frame - b.frame || a.variant - b.variant);
     const status = m.status === "running" && id !== activeId ? "interrupted" : m.status;
+    // A regeneration slot of a finished collection that is still pending/submitted while nothing is running for it: the server
+    // stopped before the result was saved. It is shown as failed (prompt_id kept) and is never resubmitted.
+    if (m.status !== "running" && id !== activeId) {
+      for (const f of frames) {
+        if (f.sourceVariant !== undefined && (f.status === "pending" || f.status === "submitted")) {
+          const name = `scene-${String(f.frame).padStart(2, "0")}-v${String(f.variant).padStart(2, "0")}`;
+          // The variant's own sidecar is written before the manifest (prompt_id first), so it may know more than collection.json.
+          let side: { status?: string; promptId?: string; error?: string } = {};
+          try {
+            side = JSON.parse(await readFile(join(dir, id, `${name}.json`), "utf8"));
+          } catch {
+            /* no sidecar: keep what the manifest says */
+          }
+          if (typeof side.promptId === "string" && !f.promptId) f.promptId = side.promptId;
+          const hasPng = side.status === "done" && (await stat(join(dir, id, `${name}.png`)).then((s) => s.isFile(), () => false));
+          if (hasPng) {
+            f.status = "done";
+            f.image = `${name}.png`;
+          } else {
+            f.status = f.status === "submitted" || f.promptId ? "timeout" : "failed"; // accepted by ComfyUI: outcome unknown
+            f.error = side.error ?? "Regeneration was interrupted before the image was saved; it is not resubmitted automatically";
+          }
+        }
+      }
+    }
     const selections = await readSelections(dir, id);
     const view: CollectionView = {
       id,

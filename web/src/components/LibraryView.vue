@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { Collection } from "../api";
-import { badgeOf, exportInfo, finalOf, hasIssues, needsSelection, scenesOf, titleOf } from "../lib";
+import { badgeOf, exportInfo, finalOf, hasIssues, needsSelection, scenesOf, titleOf, variantsLine } from "../lib";
 import { modelById } from "../models";
 import { COLLECTIONS_LIMIT } from "../api";
 import { dateRu, nPlural, ofImages, W } from "../ru";
@@ -78,7 +78,7 @@ const stateText = (status: string | undefined, running: boolean) =>
           <div class="chips">
             <span class="muted small">{{ dateRu(c.createdAt) }}</span>
             <span class="chip">{{ nPlural(c.frameCount, W.frame) }}</span>
-            <span v-if="c.variations > 1" class="chip">× {{ nPlural(c.variations, W.variant) }}</span>
+            <span v-if="variantsLine(c)" class="chip">{{ variantsLine(c) }}</span>
             <span v-if="c.feedback?.rating" class="chip stars" :title="`Оценка ${c.feedback.rating} из 5`">{{ "★".repeat(c.feedback.rating) }}</span>
           </div>
         </div>

@@ -42,6 +42,19 @@ export function exportInfo(c: Collection): { ready: boolean; resolved: number; t
   return { ready: false, resolved, total, message: "Выберите хотя бы одно изображение." };
 }
 
+/** Variants differ per frame after regeneration: "× 2 варианта" when all frames have the same number, else a range. */
+export function variantsLine(c: Collection): string | null {
+  const counts = scenesOf(c).map((s) => s.variants.length).filter((n) => n > 0);
+  if (!counts.length) return null;
+  const max = Math.max(...counts);
+  if (max < 2) return null;
+  return Math.min(...counts) === max ? `× ${nPlural(max, W.variant)}` : `вариантов на кадр: ${Math.min(...counts)}–${max}`;
+}
+
+/** True while the server is regenerating exactly this slot. */
+export const isRegenerating = (run: { status: string; regeneration?: { collectionId: string; frame: number; variant: number } } | undefined, c: Collection, f: Frame): boolean =>
+  run?.status === "generating" && run.regeneration?.collectionId === c.id && run.regeneration.frame === f.frame && run.regeneration.variant === f.variant;
+
 export type Badge = { text: string; cls: "ok" | "run" | "warn" | "bad" };
 
 export function badgeOf(c: Collection): Badge {

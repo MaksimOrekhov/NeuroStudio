@@ -8,6 +8,7 @@ import { buildJobs, runCollection, slugify, type Generation, type Manifest } fro
 import { MAX_FRAMES, autoMix, type ImageModelAssignment, type ImageModelId } from "../src/imageModels.ts";
 import { runErrorCode, type ErrorCode } from "../src/errors.ts";
 import { listCollections } from "./collections.ts";
+import { loadSource, parseFrame, parsePositive, parseVariant, frameCountOf, reserve, runRegeneration } from "../src/regenerate.ts";
 
 export type RunStatus = "idle" | "planning" | "generating" | "completed" | "failed";
 
@@ -31,6 +32,8 @@ export interface RunState {
   /** Id of the batch folder in output/batches (= run id in GET /api/runs); set once the plan is saved. */
   runId?: string;
   currentFrame?: number;
+  /** Set only while/after a targeted regeneration (NS-017) of one image: the same lock and state as a normal run. */
+  regeneration?: { collectionId: string; frame: number; variant: number; sourceVariant: number };
   /** Ids of collections already saved by this batch. */
   finished: string[];
   /** Original technical message. */
@@ -130,6 +133,57 @@ export class AutopilotRunner {
         this.busy = false;
       });
     return this.state;
+  }
+
+  /**
+   * NS-017: creates ONE new variant of one frame from the saved graph of `sourceVariant`. Uses the same lock as start(): while a
+   * batch or another regeneration runs this throws ALREADY_RUNNING (409). No Codex. Validation and the reservation of the new
+   * slot in collection.json finish before this returns; the generation itself runs in the background.
+   */
+  async startRegeneration(req: { collectionId: string; frame: unknown; sourceVariant: unknown; positive?: unknown }): Promise<RunState> {
+    if (this.busy) throw new RunError("ALREADY_RUNNING", "A generation is already in progress", 409);
+    this.busy = true; // synchronous lock, shared with start()
+    try {
+      const { collectionsDir, log } = this.deps;
+      const id = req.collectionId;
+      const frame = parseFrame(req.frame, await frameCountOf(collectionsDir, id));
+      const sourceVariant = parseVariant(req.sourceVariant, "sourceVariant");
+      const positive = parsePositive(req.positive);
+      const src = await loadSource(collectionsDir, id, frame, sourceVariant);
+      try {
+        await this.deps.client.systemStats();
+      } catch (e) {
+        throw new RunError("COMFY_UNREACHABLE", `ComfyUI is not reachable: ${(e as Error).message}. Start ComfyUI and try again.`, 503);
+      }
+      const r = await reserve(collectionsDir, id, src, positive);
+      this.state = {
+        ...idle(),
+        status: "generating",
+        collectionId: id,
+        collection: 1,
+        collections: 1,
+        frames: 1,
+        variations: 1,
+        total: 1,
+        currentFrame: frame,
+        regeneration: { collectionId: id, frame, variant: r.variant, sourceVariant },
+        startedAt: new Date().toISOString(),
+      };
+      void runRegeneration({ r, client: this.deps.client, log })
+        .then(() => {
+          this.state = { ...this.state, status: "completed", done: 1, currentFrame: undefined, finishedAt: new Date().toISOString() };
+        })
+        .catch((e) => {
+          this.state = { ...this.state, status: "failed", error: (e as Error).message, errorCode: runErrorCode(e), currentFrame: undefined, finishedAt: new Date().toISOString() };
+        })
+        .finally(() => {
+          this.busy = false;
+        });
+      return this.state;
+    } catch (e) {
+      this.busy = false;
+      throw e;
+    }
   }
 
   private async execute(cfg: RunSettings) {

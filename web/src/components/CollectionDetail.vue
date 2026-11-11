@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { COMPOSITION_FIELDS } from "../../../src/composition";
-import { exportUrl, imageUrl, type Collection } from "../api";
-import { badgeOf, descriptionOf, exportInfo, pad2, scenesOf, titleOf, unknownFrames, type Scene } from "../lib";
+import { exportUrl, imageUrl, type Collection, type Frame } from "../api";
+import { badgeOf, descriptionOf, exportInfo, isRegenerating, pad2, scenesOf, titleOf, unknownFrames, variantsLine, type Scene } from "../lib";
 import { modelById } from "../models";
 import { AUTO_RU, BAD_TAGS, dateFullRu, effortRu, FIELD_RU, GOOD_TAGS, nPlural, ofImages, optionRu, secondsRu, W } from "../ru";
-import { bestBusy, bestError, chooseBest, draftOf, go, rate, saveNote, toggleTag } from "../store";
+import { bestBusy, bestError, chooseBest, draftOf, go, openRegen, rate, regen, run, running, saveNote, toggleTag } from "../store";
+import RegenerateDialog from "./RegenerateDialog.vue";
 import Thumb from "./Thumb.vue";
 import Viewer from "./Viewer.vue";
 
@@ -23,10 +24,23 @@ function current(s: Scene) {
   return s.variants.find((v) => v.variant === want) ?? s.variants.find((v) => v.image) ?? s.variants[0];
 }
 const isBest = (frame: number, variant: number) => props.c.selections[String(frame)] === variant;
-const stateText = (status: string) =>
-  status === "pending" ? (props.c.status === "running" ? "В очереди" : "Не создано") : status === "submitted" ? (props.c.status === "running" ? "Генерируется…" : "Состояние неизвестно") : status === "timeout" ? "Состояние неизвестно" : "Ошибка";
+const stateText = (status: string, f?: Frame) =>
+  f && isRegenerating(run.value, props.c, f) ? "Перегенерируется…" : status === "pending" ? (props.c.status === "running" ? "В очереди" : "Не создано") : status === "submitted" ? (props.c.status === "running" ? "Генерируется…" : "Состояние неизвестно") : status === "timeout" ? "Состояние неизвестно" : "Ошибка";
 
 const viewer = ref<{ frame: number; variant: number } | null>(null);
+
+// A regenerated image that has just been saved becomes the one shown for its frame (Best is not changed).
+const regenImage = computed(() => {
+  const r = run.value?.regeneration;
+  return r && r.collectionId === props.c.id ? (props.c.frames.find((f) => f.frame === r.frame && f.variant === r.variant)?.image ?? null) : null;
+});
+watch(regenImage, (now, was) => {
+  const r = run.value?.regeneration;
+  if (now && !was && r) viewing[r.frame] = r.variant;
+});
+const variants = computed(() => variantsLine(props.c));
+const busyRegen = computed(() => running.value || regen.submitting);
+const regenFrame = (frame: number) => run.value?.status === 'generating' && run.value.regeneration?.collectionId === props.c.id && run.value.regeneration.frame === frame;
 
 // ---- Оценка (NS-010: same tag ids, same API, saved at once; requests are serialised per collection) ----
 const hover = ref(0);
@@ -62,7 +76,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
           <h1>{{ titleOf(c) }}</h1>
           <span class="badge" :class="badge.cls"><span v-if="c.status === 'running'" class="spinner" />{{ badge.text }}</span>
         </div>
-        <p class="muted small">{{ date }} · {{ nPlural(c.frameCount, W.frame) }}<template v-if="c.variations > 1"> × {{ nPlural(c.variations, W.variant) }}</template></p>
+        <p class="muted small">{{ date }} · {{ nPlural(c.frameCount, W.frame) }}<template v-if="variants">{{ (variants.startsWith("×") ? " " : " · ") + variants }}</template></p>
         <p v-if="descriptionOf(c)" class="desc">{{ descriptionOf(c) }}</p>
       </div>
       <div class="exp">
@@ -94,8 +108,8 @@ const date = computed(() => dateFullRu(props.c.createdAt));
               <span class="zoom">Открыть</span>
             </button>
             <div v-else class="img ph" :class="f.status">
-              <span v-if="f.status === 'submitted' && c.status === 'running'" class="spinner" />
-              <span>{{ stateText(f.status) }}</span>
+              <span v-if="(f.status === 'submitted' && c.status === 'running') || isRegenerating(run, c, f)" class="spinner" />
+              <span>{{ stateText(f.status, f) }}</span>
             </div>
             <div class="cap">
               <b>{{ pad2(s.frame) }}</b>
@@ -108,7 +122,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
                 v-for="v in s.variants"
                 :key="v.variant"
                 :class="{ on: v.variant === f.variant, best: isBest(s.frame, v.variant), off: !v.image }"
-                :title="v.image ? `Вариант ${v.variant} · seed ${v.seed}` : `Вариант ${v.variant} · ${stateText(v.status).toLowerCase()}`"
+                :title="v.image ? `Вариант ${v.variant} · seed ${v.seed}${v.promptEdited ? ' · промпт изменён' : ''}` : `Вариант ${v.variant} · ${stateText(v.status, v).toLowerCase()}`"
                 @click="viewing[s.frame] = v.variant"
               >
                 <Thumb v-if="v.image" :id="c.id" :file="v.image" :alt="`Вариант ${v.variant}`" />
@@ -118,6 +132,17 @@ const date = computed(() => dateFullRu(props.c.createdAt));
             <button v-if="f.image" class="btn sm sel" :class="{ ok: isBest(s.frame, f.variant) }" :disabled="bestBusy[c.id]" @click="chooseBest(c, s.frame, f.variant)">
               {{ isBest(s.frame, f.variant) ? "✓ Лучший" : s.variants.length > 1 ? `Выбрать вариант ${f.variant} лучшим` : "Выбрать лучшим" }}
             </button>
+            <button
+              v-if="f.image"
+              class="btn sm sel"
+              :disabled="busyRegen"
+              :title="running ? 'Сейчас идёт другая генерация' : 'Создать ещё один вариант этого кадра (Codex не используется)'"
+              @click="openRegen(c, s.frame, f.variant)"
+            >
+              {{ regenFrame(s.frame) ? "Перегенерируется…" : "Перегенерировать" }}
+            </button>
+            <small v-if="f.promptEdited" class="edited">Промпт изменён · из варианта {{ f.sourceVariant }}</small>
+            <small v-else-if="f.sourceVariant" class="edited">Перегенерация варианта {{ f.sourceVariant }}</small>
             <p v-if="s.summary" class="sum">{{ s.summary }}</p>
           </template>
         </section>
@@ -178,6 +203,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
       </aside>
     </div>
 
+    <RegenerateDialog v-if="regen.target && regen.target.id === c.id" />
     <Viewer v-if="viewer" :c="c" :frame="viewer.frame" :variant="viewer.variant" @close="viewer = null" @move="(f, v) => (viewer = { frame: f, variant: v })" />
   </div>
 </template>
@@ -222,6 +248,7 @@ h1 { font-size: 26px; }
 .vl { position: absolute; left: 0; right: 0; bottom: 0; font-size: 11px; background: rgba(10, 11, 15, 0.75); padding: 1px 0; text-align: center; }
 .vars button.best .vl { color: var(--ok); }
 .sel { width: 100%; }
+.edited { color: var(--muted); font-size: 12px; }
 .sum { font-size: 13px; color: var(--muted); }
 .side { display: flex; flex-direction: column; gap: 16px; position: sticky; top: 88px; }
 .panel { padding: 18px; display: flex; flex-direction: column; gap: 10px; }

@@ -14,6 +14,7 @@ import { resolveImageModels } from "../src/imageModels.ts";
 import type { ErrorCode } from "../src/errors.ts";
 import { listRuns } from "./runs.ts";
 import { RunError, type AutopilotRunner } from "./runner.ts";
+import { RegenError, frameCountOf, loadSource, parseFrame, parseVariant } from "../src/regenerate.ts";
 
 export interface AppDeps {
   runner: AutopilotRunner;
@@ -122,6 +123,38 @@ export function buildApp(d: AppDeps) {
       return reply.send(zipStream(files));
     } catch (e) {
       if (e instanceof ExportError) return fail(reply, e.httpStatus, e.code, e.message);
+      throw e;
+    }
+  });
+
+  /** The positive prompt a variant was actually generated with, and whether it can be regenerated. Reads only saved files of that collection. */
+  app.get("/api/collections/:id/frames/:frame/variants/:variant/prompt", async (req, reply) => {
+    const p = req.params as { id: string; frame: string; variant: string };
+    try {
+      const frame = parseFrame(p.frame, await frameCountOf(d.collectionsDir, p.id));
+      const variant = parseVariant(p.variant);
+      try {
+        const s = await loadSource(d.collectionsDir, p.id, frame, variant);
+        return { frame, variant, model: s.model, positive: s.positive, promptEdited: s.promptEdited, available: true };
+      } catch (e) {
+        if (e instanceof RegenError && e.code === "SOURCE_UNAVAILABLE") return { frame, variant, available: false, code: e.code, reason: e.message };
+        throw e;
+      }
+    } catch (e) {
+      if (e instanceof RegenError) return fail(reply, e.httpStatus, e.code, e.message);
+      throw e;
+    }
+  });
+
+  /** Creates ONE new variant of one frame (no Codex). 202 = accepted and running in the background; 409 ALREADY_RUNNING while anything else runs. */
+  app.post("/api/collections/:id/frames/:frame/regenerate", async (req, reply) => {
+    const p = req.params as { id: string; frame: string };
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      const state = await d.runner.startRegeneration({ collectionId: p.id, frame: p.frame, sourceVariant: body.sourceVariant, positive: body.positive });
+      return reply.code(202).send(state);
+    } catch (e) {
+      if (e instanceof RunError || e instanceof RegenError) return fail(reply, e.httpStatus, e.code, e.message);
       throw e;
     }
   });

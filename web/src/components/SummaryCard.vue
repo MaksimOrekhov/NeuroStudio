@@ -56,7 +56,7 @@ async function generate() {
     <div v-if="running && run" class="live">
       <div class="lrow">
         <span class="spinner" />
-        <span>{{ run.status === "planning" ? "Codex составляет план генерации…" : `Генерация ${run.done} из ${run.total}` }}</span>
+        <span>{{ run.status === "planning" ? "Codex составляет план генерации…" : run.regeneration ? `Перегенерируется кадр ${run.regeneration.frame}…` : `Генерация ${run.done} из ${run.total}` }}</span>
       </div>
       <div class="bar"><div :style="{ width: pct + '%' }" /></div>
       <p class="muted small">Одновременно выполняется одна генерация. Настройки для следующей можно менять уже сейчас — текущий запуск они не затронут.</p>

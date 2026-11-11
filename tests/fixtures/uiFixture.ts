@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import sharp from "sharp";
 import { buildApp } from "../../server/app.ts";
 import { AutopilotRunner } from "../../server/runner.ts";
-import { loadWorkflow } from "../../src/comfy.ts";
+import { MODELS, applyParams, loadWorkflow } from "../../src/comfy.ts";
 import { planV3 } from "./strictPlan.ts";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -42,6 +42,7 @@ interface Spec {
 }
 
 async function writeCollection(dir: string, s: Spec) {
+  const base = await loadWorkflow(join(root, "workflows/anima-crimson-oath.api.json"));
   const d = join(dir, s.id);
   await mkdir(d, { recursive: true });
   const frames = s.frameCount ?? 4;
@@ -60,7 +61,12 @@ async function writeCollection(dir: string, s: Spec) {
         png: st === "done" ? `${name}.png` : undefined,
         error: st === "failed" ? "Generation failed: CUDA out of memory (KSampler)" : undefined,
       });
-      if (st === "done") await writeFile(join(d, `${name}.png`), await placeholderPng(s.hue + f * 17, f, v));
+      if (st === "done") {
+        await writeFile(join(d, `${name}.png`), await placeholderPng(s.hue + f * 17, f, v));
+        // the sidecar the real generator writes: it holds the ComfyUI graph that regeneration starts from (NS-017)
+        const graph = applyParams(base, { positive: `masterpiece, scene ${f}, ${s.id}, soft light`, negative: "lowres", seed: 100000 + f * 10 + v, unet: MODELS[s.models[f - 1] as keyof typeof MODELS], filenamePrefix: `NeuroStudio/${s.id}/${name}` });
+        await writeFile(join(d, `${name}.json`), JSON.stringify({ frame: f, model: s.models[f - 1], variant: v, seed: 100000 + f * 10 + v, graph }));
+      }
     }
   }
   const generation = s.generation
