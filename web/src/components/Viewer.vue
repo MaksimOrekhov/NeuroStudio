@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, onMounted } from "vue";
 import { imageUrl, type Collection } from "../api";
 import { pad2, summaryOf, titleOf } from "../lib";
 import { modelById } from "../models";
-import { bestBusy, chooseBest } from "../store";
+import { bestBusy, chooseBest, imageFbError } from "../store";
+import ImageRating from "./ImageRating.vue";
 
 const props = defineProps<{ c: Collection; frame: number; variant: number }>();
 const emit = defineEmits<{ close: []; move: [frame: number, variant: number] }>();
@@ -46,6 +47,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           <button class="btn ghost" @click="emit('close')">Закрыть <kbd>Esc</kbd></button>
         </div>
       </div>
+      <div class="rt"><ImageRating :c="c" :frame="f.frame" :variant="f.variant" /></div>
+      <p v-if="imageFbError[c.id]" class="note bad">{{ imageFbError[c.id] }}</p>
       <p class="muted small pos">{{ idx + 1 }} / {{ images.length }} · ← → — листать</p>
     </div>
     <button class="nav" aria-label="Следующее изображение" @click="step(1)">›</button>
@@ -56,14 +59,15 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .back { position: fixed; inset: 0; z-index: 40; background: rgba(5, 6, 9, 0.93); display: flex; align-items: center; justify-content: center; gap: 24px; padding: 24px; }
 .box { display: flex; flex-direction: column; gap: 14px; max-height: 100%; }
 .pic img { width: 100%; height: 100%; object-fit: contain; display: block; background: var(--panel-2); }
-.pic { aspect-ratio: 2 / 3; height: calc(100vh - 200px); margin: 0 auto; border-radius: 14px; overflow: hidden; border: 2px solid transparent; }
+.pic { aspect-ratio: 2 / 3; height: calc(100vh - 310px); margin: 0 auto; border-radius: 14px; overflow: hidden; border: 2px solid transparent; }
 .pic.best { border-color: var(--ok); }
-.info { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; width: calc((100vh - 200px) * 2 / 3); min-width: 560px; margin: 0 auto; }
+.info { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; width: calc((100vh - 310px) * 2 / 3); min-width: 560px; margin: 0 auto; }
 .it { min-width: 0; flex: 1; }
 .it p { font-size: 14px; display: flex; align-items: center; gap: 6px; }
 .acts { display: flex; gap: 6px; flex: none; }
 kbd { font: 11px/1 inherit; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--line-2); color: var(--muted); }
 .pos { text-align: center; }
+.rt { width: calc((100vh - 310px) * 2 / 3); min-width: 560px; margin: 0 auto; }
 .nav { flex: none; width: 52px; height: 52px; border-radius: 50%; border: 1px solid var(--line-2); background: var(--panel); color: var(--text); font-size: 28px; line-height: 1; }
 .nav:hover { border-color: var(--accent); }
 </style>
