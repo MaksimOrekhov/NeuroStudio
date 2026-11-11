@@ -295,17 +295,18 @@ test("library: 1, 2, 3 and 4 frame collections and an old collection without new
   assert.equal(lib.titleOf(old), "Saltglass Conservatory"); // original title as fallback
   assert.equal(lib.titleOf(by("2026-11-10-ferry")), "Утренний паром");
   assert.equal(old.generation, undefined);
-  assert.equal(old.export.ready, true); // the server decides
-  assert.equal(lib.exportInfo(old).ready, true);
-  // one frame, one variant: ready at once; several variants without Best: reason in Russian
-  assert.equal(lib.exportInfo(by("2026-11-10-ovation")).ready, true);
+  assert.equal(old.export.ready, false); // nothing selected: the server says not ready, no auto-selection
+  assert.equal(lib.exportInfo(old).message, "Выберите хотя бы одно изображение.");
+  // single-variant frames also need an explicit Best
+  assert.equal(lib.exportInfo(by("2026-11-10-ovation")).ready, false);
+  // ferry has Best on 2 of 4 frames: exactly those 2 are exported
   const ferry = lib.exportInfo(by("2026-11-10-ferry"));
-  assert.equal(ferry.ready, false);
-  assert.equal(ferry.message, "Выберите лучшие: 2/4");
-  assert.equal(lib.needsSelection(by("2026-11-10-ferry")), true);
-  assert.equal(lib.needsSelection(by("2026-11-10-ovation")), false);
+  assert.equal(ferry.ready, true);
+  assert.equal(ferry.resolved, 2);
+  assert.equal(lib.needsSelection(by("2026-11-10-ferry")), false);
+  assert.equal(lib.needsSelection(by("2026-11-10-ovation")), true);
   assert.equal(lib.hasIssues(by("2026-11-08-lemon")), true);
-  assert.match(lib.exportInfo(by("2026-11-08-lemon")).message, /Нет готового изображения/);
+  assert.match(lib.exportInfo(by("2026-11-08-lemon")).message, /Выберите хотя бы одно изображение/); // has finished images, none selected
 });
 
 test("Best: shown as saved only after the server confirms; a failed save changes nothing", async () => {
@@ -319,6 +320,7 @@ test("Best: shown as saved only after the server confirms; a failed save changes
   assert.equal(c().export.resolved, 3);
   await S.chooseBest(c(), 2, 1); // the same variant again clears it
   assert.equal(c().selections["2"], undefined);
+  assert.equal(c().export.resolved, 2);
   // the server refuses: the UI keeps the confirmed state and tells why
   const before = JSON.stringify(c().selections);
   const saved = route!;
@@ -330,14 +332,15 @@ test("Best: shown as saved only after the server confirms; a failed save changes
   await S.chooseBest(c(), 2, 1);
   await S.chooseBest(c(), 4, 2);
   assert.equal(c().selections["4"], 2);
-  assert.equal(c().export.ready, true); // all four frames resolved: ZIP available
+  assert.equal(c().export.ready, true);
+  assert.equal(c().export.resolved, 4); // all four frames selected: ZIP available
   const zip = await a.app.inject({ method: "GET", url: "/api/collections/2026-11-10-ferry/export", headers: { host: HOST } });
   assert.equal(zip.statusCode, 200);
   assert.equal(zip.headers["content-type"], "application/zip");
 });
 test("export: the server refuses an incomplete ZIP with EXPORT_INCOMPLETE, which the UI words in Russian", async () => {
   const a = await useApp();
-  const r = await a.app.inject({ method: "GET", url: "/api/collections/2026-11-10-ferry/export", headers: { host: HOST } });
+  const r = await a.app.inject({ method: "GET", url: "/api/collections/2026-11-10-ovation/export", headers: { host: HOST } }); // no Best selected
   assert.equal(r.statusCode, 409);
   assert.equal(r.json().code, "EXPORT_INCOMPLETE");
   assert.match(errors.describeError(new ApiError(r.json().error, r.json().code, 409)).message, /ZIP пока недоступен/);

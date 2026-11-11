@@ -71,26 +71,71 @@ test("export picks the Best of each scene and names files scene-01..04.png with 
   assert.equal(await readFile(join(dir, "multi", "selections.json"), "utf8"), before); // export changes nothing
 });
 
-test("historic collection (single variant, no selections.json) exports without any selection", async () => {
+test("single-variant frames are not auto-selected: Best on frames 1 and 3 only gives exactly 2 PNG", async () => {
   const { dir, app } = await makeApp();
-  await collection(dir, "old", [1, 2, 3, 4].map((f) => ({ frame: f, png: `scene-0${f}.png` })));
-  const c = (await app.inject({ method: "GET", url: "/api/collections/old", headers: H })).json();
-  assert.deepEqual(c.export, { ready: true, resolved: 4 });
-  const zip = readZip((await exportReq(app, "old")).rawPayload);
-  assert.equal(zip.length, 4);
-  assert.deepEqual(zip[2].data, png("scene-03.png"));
+  await collection(dir, "single4", [1, 2, 3, 4].map((f) => ({ frame: f, png: `scene-0${f}.png` })), { "1": 1, "3": 1 });
+  const c = (await app.inject({ method: "GET", url: "/api/collections/single4", headers: H })).json();
+  assert.deepEqual(c.export, { ready: true, resolved: 2 });
+  const zip = readZip((await exportReq(app, "single4")).rawPayload);
+  assert.deepEqual(zip.map((z) => z.name), ["scene-01.png", "scene-03.png"]);
+  assert.deepEqual(zip[0].data, png("scene-01.png")); // original bytes
+  assert.deepEqual(zip[1].data, png("scene-03.png"));
 });
 
-test("several variants without a Best block export and say which scenes are unselected", async () => {
+test("two variants per frame, Best on frames 2 and 4: exactly the chosen PNGs", async () => {
   const { dir, app } = await makeApp();
   const recs: Rec[] = [];
   for (const f of [1, 2, 3, 4]) for (const v of [1, 2]) recs.push({ frame: f, variant: v, png: `scene-0${f}-v0${v}.png` });
-  await collection(dir, "half", recs, { "1": 1, "3": 2 });
-  const c = (await app.inject({ method: "GET", url: "/api/collections/half", headers: H })).json();
-  assert.deepEqual(c.export, { ready: false, resolved: 2, message: "Select best images: 2/4" });
-  const res = await exportReq(app, "half");
+  await collection(dir, "half", recs, { "2": 2, "4": 1 });
+  const zip = readZip((await exportReq(app, "half")).rawPayload);
+  assert.deepEqual(zip.map((z) => z.name), ["scene-02.png", "scene-04.png"]);
+  assert.deepEqual(zip[0].data, png("scene-02-v02.png"));
+  assert.deepEqual(zip[1].data, png("scene-04-v01.png"));
+});
+
+test("one selected frame gives one PNG; all four selected give four", async () => {
+  const { dir, app } = await makeApp();
+  await collection(dir, "one", [1, 2, 3, 4].map((f) => ({ frame: f, png: `scene-0${f}.png` })), { "2": 1 });
+  assert.deepEqual(readZip((await exportReq(app, "one")).rawPayload).map((z) => z.name), ["scene-02.png"]);
+  await collection(dir, "all", [1, 2, 3, 4].map((f) => ({ frame: f, png: `scene-0${f}.png` })), { "1": 1, "2": 1, "3": 1, "4": 1 });
+  assert.equal(readZip((await exportReq(app, "all")).rawPayload).length, 4);
+});
+
+test("nothing selected: export is not ready and the endpoint refuses", async () => {
+  const { dir, app } = await makeApp();
+  await collection(dir, "none", [1, 2, 3, 4].map((f) => ({ frame: f, png: `scene-0${f}.png` })));
+  const c = (await app.inject({ method: "GET", url: "/api/collections/none", headers: H })).json();
+  assert.deepEqual(c.export, { ready: false, resolved: 0, message: "Select at least one image" });
+  const res = await exportReq(app, "none");
   assert.equal(res.statusCode, 409);
-  assert.match(res.json().error, /Select best images: 2\/4/);
+  assert.equal(res.json().code, "EXPORT_INCOMPLETE");
+});
+
+test("partially finished collection: selected finished images export, unfinished frames do not block", async () => {
+  const { dir, app } = await makeApp();
+  await collection(
+    dir,
+    "partial",
+    [
+      { frame: 1, png: "scene-01.png" },
+      { frame: 2, png: "scene-02.png" },
+      { frame: 3, status: "failed" },
+      { frame: 4, status: "submitted" },
+    ],
+    { "2": 1 },
+  );
+  const zip = readZip((await exportReq(app, "partial")).rawPayload);
+  assert.deepEqual(zip.map((z) => z.name), ["scene-02.png"]);
+  assert.deepEqual(zip[0].data, png("scene-02.png"));
+});
+
+test("old collection with saved Best (no new fields) keeps working; old selections stay unchanged", async () => {
+  const { dir, app } = await makeApp();
+  await collection(dir, "old", [1, 2, 3, 4].map((f) => ({ frame: f, png: `scene-0${f}.png` })), { "4": 1, "1": 1 });
+  const before = await readFile(join(dir, "old", "selections.json"), "utf8");
+  const zip = readZip((await exportReq(app, "old")).rawPayload);
+  assert.deepEqual(zip.map((z) => z.name), ["scene-01.png", "scene-04.png"]);
+  assert.equal(await readFile(join(dir, "old", "selections.json"), "utf8"), before);
 });
 
 test("missing selected file is an error, never replaced by another variant", async () => {
@@ -110,7 +155,7 @@ test("missing selected file is an error, never replaced by another variant", asy
 test("paths outside the collection directory are never read; unknown or malicious ids give 404", async () => {
   const { dir, app } = await makeApp();
   await writeFile(join(dir, "secret.png"), png("secret"));
-  await collection(dir, "evil", [1, 2, 3, 4].map((f) => ({ frame: f, png: f === 1 ? "../secret.png" : `scene-0${f}.png` })));
+  await collection(dir, "evil", [1, 2, 3, 4].map((f) => ({ frame: f, png: f === 1 ? "../secret.png" : `scene-0${f}.png` })), { "1": 1 });
   const res = await exportReq(app, "evil");
   assert.equal(res.statusCode, 409);
   assert.match(res.json().error, /invalid image path/);

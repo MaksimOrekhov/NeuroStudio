@@ -78,7 +78,7 @@ const IMAGE = /^scene-\d{2}(-v\d{2})?\.png$/;
 
 export interface ExportStatus {
   ready: boolean;
-  /** Scenes (of frameCount) that have a final image: selected Best, or a single finished variant. */
+  /** Number of explicitly selected Best images that can be exported (0 when nothing is selected). */
   resolved: number;
   /** Human-readable reason when not ready. */
   message?: string;
@@ -91,32 +91,27 @@ interface Choice {
 }
 
 /**
- * Picks the final image of each scene of the collection. Never substitutes another variant for a missing selected one.
+ * The explicitly selected Best image of each scene, in frame order. Scenes without a selection are not included
+ * (a single-variant scene is not auto-selected either). Never substitutes another variant for a missing selected one.
  */
 export function chooseScenes(c: CollectionView): Choice[] {
-  return Array.from({ length: c.frameCount }, (_, i) => i + 1).map((frame) => {
-    const variants = c.frames.filter((f) => f.frame === frame);
+  const out: Choice[] = [];
+  for (let frame = 1; frame <= c.frameCount; frame++) {
     const sel = c.selections[String(frame)];
-    if (sel !== undefined) {
-      const v = variants.find((f) => f.variant === sel);
-      return v?.image ? { frame, image: v.image } : { frame, problem: `scene ${frame}: the selected image (v${sel}) is not available` };
-    }
-    if (variants.length === 1) {
-      return variants[0].image ? { frame, image: variants[0].image } : { frame, problem: `scene ${frame}: no finished image` };
-    }
-    if (variants.length === 0) return { frame, problem: `scene ${frame}: no image` };
-    return { frame, problem: `scene ${frame}: select the best of ${variants.length} variants` };
-  });
+    if (sel === undefined) continue;
+    const v = c.frames.find((f) => f.frame === frame && f.variant === sel);
+    out.push(v?.image ? { frame, image: v.image } : { frame, problem: `scene ${frame}: the selected image (v${sel}) is not available` });
+  }
+  return out;
 }
 
 export function exportStatus(c: CollectionView): ExportStatus {
   const choices = chooseScenes(c);
   const resolved = choices.filter((x) => x.image).length;
   const problems = choices.filter((x) => x.problem).map((x) => x.problem!);
-  if (!problems.length) return { ready: true, resolved };
-  const unselected = choices.filter((x) => x.problem?.includes("select the best")).length;
-  const message = unselected === problems.length ? `Select best images: ${resolved}/${c.frameCount}` : problems.join("; ");
-  return { ready: false, resolved, message };
+  if (problems.length) return { ready: false, resolved, message: problems.join("; ") };
+  if (!resolved) return { ready: false, resolved: 0, message: "Select at least one image" };
+  return { ready: true, resolved };
 }
 
 async function readSelections(dir: string, id: string): Promise<Record<string, number>> {

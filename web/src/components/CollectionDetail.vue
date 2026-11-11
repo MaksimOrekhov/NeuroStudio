@@ -66,7 +66,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
         <p v-if="descriptionOf(c)" class="desc">{{ descriptionOf(c) }}</p>
       </div>
       <div class="exp">
-        <a v-if="exp.ready" class="btn primary" :href="exportUrl(c.id)" download>Скачать выбранные · ZIP</a>
+        <a v-if="exp.ready" class="btn primary" :href="exportUrl(c.id)" download>Скачать выбранные · {{ exp.resolved }} PNG · ZIP</a>
         <button v-else class="btn primary" disabled :title="exp.message">Скачать выбранные · ZIP</button>
         <small :class="{ ok: exp.ready }">{{ exp.ready ? `✓ ${exp.message}` : exp.message }}</small>
       </div>
