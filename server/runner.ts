@@ -101,7 +101,7 @@ export class AutopilotRunner {
     return this.busy;
   }
 
-  /** `images` defaults to the pre-NS-014 behaviour: 4 frames, Auto Mix (2 Crimson Oath + 2 Duskrose). */
+  /** `images` defaults to 4 frames, assigned by the shared Auto Mix catalog. */
   async start(
     theme: string | undefined,
     count = 1,

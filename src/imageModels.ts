@@ -4,6 +4,7 @@
 export const IMAGE_MODELS = [
   { id: "crimson-oath", name: "Crimson Oath", checkpoint: "vetehineCrimsonOathILL_v02ANM.safetensors", color: "#f0607a" },
   { id: "duskrose", name: "Duskrose", checkpoint: "Duskrose v4 ANM.safetensors", color: "#b48cff" },
+  { id: "illustrijn", name: "IllustrijN", checkpoint: "IllustrijN.safetensors", color: "#54c9b0" },
 ] as const;
 
 export type ImageModelId = (typeof IMAGE_MODELS)[number]["id"];
@@ -16,7 +17,7 @@ export const MAX_FRAMES = 4;
 
 /**
  * Auto Mix: contiguous blocks in catalog order; the first models get the remainder.
- * 1 -> C, 2 -> C D, 3 -> C C D, 4 -> C C D D. With a third model it generalises (4 -> A A B C).
+ * With the current catalog: 1 -> C, 2 -> C D, 3 -> C D I, 4 -> C C D I.
  */
 export function autoMix(frames: number, models: readonly string[] = MODEL_IDS): string[] {
   if (!models.length) return [];

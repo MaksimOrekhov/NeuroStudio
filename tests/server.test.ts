@@ -10,6 +10,7 @@ import { loadWorkflow } from "../src/comfy.ts";
 import { generateBatch, loadInstructions, planPrompt, type BatchOptions, type BatchResult } from "../src/codex.ts";
 import { planV3, strictPlan } from "./fixtures/strictPlan.ts";
 import { PlanError, parseCount, validateBatch } from "../src/promptPlan.ts";
+import { autoMix } from "../src/imageModels.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const PORT = 8787;
@@ -176,9 +177,10 @@ test("batch stops on first error: no retry, no next collection, finished results
 test("validateBatch and generateBatch: exact count, distinct titles, single Codex process", async () => {
   const sample = planV3("Sample");
   const other = { ...sample, concept: { ...sample.concept, title: "Another" } };
-  assert.equal(validateBatch({ collections: [sample, other] }, 2).length, 2);
-  assert.throws(() => validateBatch({ collections: [sample] }, 2), PlanError);
-  assert.throws(() => validateBatch({ collections: [sample, sample] }, 2), /distinct/);
+  const models = autoMix(4);
+  assert.equal(validateBatch({ collections: [sample, other] }, 2, { models }).length, 2);
+  assert.throws(() => validateBatch({ collections: [sample] }, 2, { models }), PlanError);
+  assert.throws(() => validateBatch({ collections: [sample, sample] }, 2, { models }), /distinct/);
   const counter = join(await mkdtemp(join(tmpdir(), "ns-fake-")), "calls.txt");
   const script = `
     const fs = require("fs");

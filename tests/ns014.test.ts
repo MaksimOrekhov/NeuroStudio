@@ -20,25 +20,27 @@ const PORT = 8787;
 const H = { host: `127.0.0.1:${PORT}` };
 const C = "crimson-oath";
 const D = "duskrose";
+const I = "illustrijn";
 const wait = async (r: AutopilotRunner) => {
   while (r.active) await new Promise((res) => setTimeout(res, 5));
 };
 
 // ---------- image models ----------
 
-test("catalog: two models with id, name, checkpoint and colour; MODELS is derived from it", () => {
+test("catalog: supported models have id, name, checkpoint and colour; MODELS is derived from it", () => {
   assert.deepEqual(IMAGE_MODELS.map((m) => [m.id, m.checkpoint]), [
     [C, "vetehineCrimsonOathILL_v02ANM.safetensors"],
     [D, "Duskrose v4 ANM.safetensors"],
+    [I, "IllustrijN.safetensors"],
   ]);
   assert.ok(IMAGE_MODELS.every((m) => m.name && /^#[0-9a-f]{6}$/.test(m.color)));
-  assert.deepEqual(MODELS, { [C]: IMAGE_MODELS[0].checkpoint, [D]: IMAGE_MODELS[1].checkpoint });
+  assert.deepEqual(MODELS, Object.fromEntries(IMAGE_MODELS.map((m) => [m.id, m.checkpoint])));
 });
 
 test("Auto Mix for 1-4 frames; Only; Custom incl. four frames of one model", () => {
-  assert.deepEqual([1, 2, 3, 4].map((n) => autoMix(n)), [[C], [C, D], [C, C, D], [C, C, D, D]]);
-  assert.deepEqual(resolveImageModels(undefined, 4), { mode: "auto", models: [C, C, D, D] });
-  assert.deepEqual(resolveImageModels({ mode: "auto" }, 3).models, [C, C, D]);
+  assert.deepEqual([1, 2, 3, 4].map((n) => autoMix(n)), [[C], [C, D], [C, D, I], [C, C, D, I]]);
+  assert.deepEqual(resolveImageModels(undefined, 4), { mode: "auto", models: [C, C, D, I] });
+  assert.deepEqual(resolveImageModels({ mode: "auto" }, 3).models, [C, D, I]);
   assert.deepEqual(resolveImageModels({ mode: "only", model: D }, 3), { mode: "only", models: [D, D, D] });
   assert.deepEqual(resolveImageModels({ mode: "custom", perScene: [D, C, D] }, 3).models, [D, C, D]);
   assert.deepEqual(resolveImageModels({ mode: "custom", perScene: [C, C, C, C] }, 4).models, [C, C, C, C]);
@@ -113,7 +115,7 @@ test("validatePlan v3: 1-4 frames, assigned models, numbering, Russian metadata,
 test("older plans: no Russian fields needed, 4 frames with 2 + 2, legacy mode kept", async () => {
   const old = validatePlan(strictPlan("Old"));
   assert.equal(old.concept.titleRu, undefined);
-  validatePlan(planV3("New")); // a v3 plan also passes the old-style check (Russian fields are optional there)
+  validatePlan(planV3("New", [C, C, D, D])); // a 2+2 plan also passes the old-style check (Russian fields are optional there)
   const legacy = JSON.parse(await readFile(join(root, "tests/fixtures/prompt-plan.legacy.json"), "utf8"));
   assert.equal(validatePlan(legacy, { legacy: true }).frames.length, 4);
   const oneFrame = planV3("One", [C]);
@@ -289,17 +291,17 @@ test("invalid settings: 400 + INVALID_GENERATION_SETTINGS before ComfyUI and Cod
   assert.equal(runner.active, false);
 });
 
-test("old request without new fields: 4 frames, 2 Crimson + 2 Duskrose, Plan v3 requested from Codex", async () => {
+test("old request without new fields: 4 frames with current Auto Mix, Plan v3 requested from Codex", async () => {
   const { start, runner, seen, get, dir, batchesDir } = await setup();
   assert.equal((await start({ theme: "old", collections: 1, variations: 1 })).statusCode, 202);
   await wait(runner);
-  assert.deepEqual(seen.plan[0].models, [C, C, D, D]);
+  assert.deepEqual(seen.plan[0].models, [C, C, D, I]);
   assert.equal(seen.submit.length, 4);
-  assert.deepEqual(seen.submit.map((s) => s.unet), [MODELS[C], MODELS[C], MODELS[D], MODELS[D]]);
+  assert.deepEqual(seen.submit.map((s) => s.unet), [MODELS[C], MODELS[C], MODELS[D], MODELS[I]]);
   assert.equal(runner.state.total, 4);
   const [c] = await get("/api/collections");
   assert.equal(c.frameCount, 4);
-  assert.deepEqual(c.generation.imageModels, { mode: "auto", models: [C, C, D, D] });
+  assert.deepEqual(c.generation.imageModels, { mode: "auto", models: [C, C, D, I] });
   const run = (await get("/api/runs"))[0];
   assert.equal(run.frames, 4);
   assert.equal(run.status, "completed");
