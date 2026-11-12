@@ -52,10 +52,12 @@ export function toast(text: string) {
   toastTimer = setTimeout(() => (ui.toast = ""), 3200);
 }
 
+let detailSeq = 0;
 export function go(view: View, collectionId: string | null = null, scroll = true) {
+  detailSeq++; // invalidate a request from the previous open/closed detail, including reopening the same id
   ui.view = view;
+  ui.openCollection = view === "library" ? collectionId : null;
   if (view === "library") {
-    ui.openCollection = collectionId;
     if (collectionId) void ensureCollection(collectionId);
     void loadCollections();
   }
@@ -116,6 +118,15 @@ export const pendingSelection = computed(() => app.collections.filter(needsSelec
 /** Polling replaces the list objects; results of slow requests are written to the CURRENT object of that collection. */
 const live = (c: Collection): Collection => app.collections.find((x) => x.id === c.id) ?? (app.extra?.id === c.id ? app.extra : c);
 
+// Only answers that started before a confirmed mutation need protection. A later GET can accept changes from another tab.
+const collectionRevisions = new Map<string, number>();
+const changedCollection = (id: string) => collectionRevisions.set(id, (collectionRevisions.get(id) ?? 0) + 1);
+function mergeCollection(incoming: Collection, started: Map<string, number>): Collection {
+  if (collectionRevisions.get(incoming.id) === started.get(incoming.id)) return incoming;
+  const current = live(incoming);
+  return { ...incoming, selections: current.selections, export: current.export, imageFeedback: current.imageFeedback, feedback: current.feedback };
+}
+
 export const currentCollection = computed(() => app.collections.find((c) => c.id === ui.openCollection) ?? (app.extra?.id === ui.openCollection ? app.extra : undefined));
 
 // -- status polling: one request at a time, stale answers dropped --
@@ -139,12 +150,9 @@ export async function refreshStatus(): Promise<void> {
     app.connection = "ok";
     const was = before?.status === "planning" || before?.status === "generating";
     const now = s.run.status === "planning" || s.run.status === "generating";
-    if (now) {
-      void loadCollections();
-      if (ui.view === "activity") void loadRuns(); // the run record is written just after the 202
-    }
+    if (now || was !== now || before?.runId !== s.run.runId || ui.view === "library") void loadCollections();
+    if (now && ui.view === "activity") void loadRuns(); // the run record is written just after the 202
     if (was !== now || before?.runId !== s.run.runId) {
-      void loadCollections();
       void loadRuns();
     }
   } catch {
@@ -203,12 +211,17 @@ function coalesced(fn: () => Promise<void>): () => Promise<void> {
 }
 
 export const loadCollections = coalesced(async () => {
+  const started = new Map(collectionRevisions);
   try {
-    app.collections = await getCollections();
+    app.collections = (await getCollections()).map((c) => mergeCollection(c, started));
     app.collectionsLoaded = true;
     app.collectionsError = null;
   } catch (e) {
     app.collectionsError = describeError(e);
+  }
+  // Only the open detail needs an extra request when it is outside the current page, including during/after regeneration.
+  if (ui.view === "library" && ui.openCollection && !app.collections.some((c) => c.id === ui.openCollection)) {
+    await ensureCollection(ui.openCollection, true);
   }
 });
 
@@ -222,12 +235,16 @@ export const loadRuns = coalesced(async () => {
   }
 });
 
-export async function ensureCollection(id: string): Promise<void> {
-  if (app.collections.some((c) => c.id === id) || app.extra?.id === id) return;
+export async function ensureCollection(id: string, refresh = false): Promise<void> {
+  if (!refresh && (app.collections.some((c) => c.id === id) || app.extra?.id === id)) return;
+  const seq = ++detailSeq;
+  const started = new Map(collectionRevisions);
+  const stillOpen = () => seq === detailSeq && ui.view === "library" && ui.openCollection === id;
   try {
-    app.extra = await getCollection(id);
+    const c = await getCollection(id);
+    if (stillOpen()) app.extra = mergeCollection(c, started);
   } catch (e) {
-    toast(describeError(e).message);
+    if (stillOpen()) toast(describeError(e).message);
   }
 }
 
@@ -467,6 +484,7 @@ export async function chooseBest(c: Collection, frame: number, variant: number):
   try {
     const isBest = c.selections[String(frame)] === variant;
     const r = await apiSelectBest(c.id, frame, isBest ? null : variant);
+    changedCollection(c.id);
     const cur = live(c);
     cur.selections = r.selections;
     if (r.export) cur.export = r.export;
@@ -506,6 +524,7 @@ export async function persistFeedback(c: Collection): Promise<void> {
       const sent = { rating: d.rating, tags: [...d.tags], note: d.note };
       try {
         const r = await saveFeedback(c.id, sent);
+        changedCollection(c.id);
         live(c).feedback = r.feedback as Feedback | null;
       } catch (e) {
         const u = describeError(e);
@@ -552,6 +571,7 @@ function queueImageFeedback(c: Collection, frame: number, variant: number, decid
     delete imageFbError[c.id];
     try {
       const r = await saveImageFeedback(c.id, frame, variant, body);
+      changedCollection(c.id);
       const cur = live(c);
       cur.imageFeedback = { ...cur.imageFeedback };
       if (r.feedback) cur.imageFeedback[`${frame}-${variant}`] = r.feedback;

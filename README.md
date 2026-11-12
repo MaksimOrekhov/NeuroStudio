@@ -23,3 +23,4 @@ NS-009: Creative Director v2 (`prompts/CREATIVE_DIRECTOR.md`) — [docs/ns-009-c
 NS-013: интерактивный UX-прототип нового интерфейса (русский, только десктоп 2560×1440 / 1920×1080) на mock-данных — `npm run dev:prototype` (http://127.0.0.1:5174), см. [docs/ns-013-ux-design.md](docs/ns-013-ux-design.md).
 NS-014: движок гибкой генерации (backend) — коллекции из 1–4 кадров, модель на кадр, Prompt Plan v3, `GET /api/runs`, коды ошибок; UI подключается в NS-015 — [docs/ns-014-flexible-generation.md](docs/ns-014-flexible-generation.md).
 NS-015: рабочий русский интерфейс (Создание / Библиотека / Запуски) на реальном API — [docs/ns-015-production-ui.md](docs/ns-015-production-ui.md). Просмотр без Codex и ComfyUI: `npx tsx scripts/ui-test-server.ts`.
+NS-021: исправления надёжности сохранения, конкурентных операций и обновления интерфейса; минимальный CI — [docs/ns-021-reliability-hardening.md](docs/ns-021-reliability-hardening.md).
