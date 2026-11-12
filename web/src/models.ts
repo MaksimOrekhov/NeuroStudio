@@ -5,7 +5,7 @@ import { W, nPlural } from "./ru";
 // Pure TypeScript (no Vue) so the rules can be unit-tested and later moved to src/ in NS-014.
 
 export interface ImageModel {
-  /** Id used in Prompt Plans and manifests ("crimson-oath", "duskrose"). */
+  /** Id used in Prompt Plans and manifests (from the shared catalog). */
   id: string;
   name: string;
   /** Accent used for the model dot/chip in the UI. */

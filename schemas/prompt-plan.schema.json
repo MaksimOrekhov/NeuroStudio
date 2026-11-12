@@ -63,7 +63,8 @@
             "type": "string",
             "enum": [
               "crimson-oath",
-              "duskrose"
+              "duskrose",
+              "illustrijn"
             ]
           },
           "summary": {

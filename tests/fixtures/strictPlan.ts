@@ -6,7 +6,7 @@ const views = ["front view, waist-up composition", "rear three-quarter view, hea
 
 /** A plan in the Creative Director v2 format: frames 1-2 crimson-oath, 3-4 duskrose, no negative prompts, no Russian fields. */
 export function strictPlan(title = "Test Concept"): PromptPlan {
-  const models = autoMix(4) as PromptPlan["frames"][number]["model"][];
+  const models: PromptPlan["frames"][number]["model"][] = ["crimson-oath", "crimson-oath", "duskrose", "duskrose"];
   return {
     concept: { title, description: `${title}: a quiet test collection.`, heroine },
     frames: models.map((model, i) => ({

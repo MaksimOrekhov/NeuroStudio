@@ -8,12 +8,13 @@ import { makeCollection } from "../web/prototype/src/mock.ts";
 
 const C = "crimson-oath";
 const D = "duskrose";
+const I = "illustrijn";
 
-test("Auto Mix: contiguous split, first model gets the remainder, 4 frames keep 2 + 2", () => {
+test("Auto Mix: contiguous split, first model gets the remainder across the current catalog", () => {
   assert.deepEqual(autoMix(1), [C]);
   assert.deepEqual(autoMix(2), [C, D]);
-  assert.deepEqual(autoMix(3), [C, C, D]);
-  assert.deepEqual(autoMix(4), [C, C, D, D]);
+  assert.deepEqual(autoMix(3), [C, D, I]);
+  assert.deepEqual(autoMix(4), [C, C, D, I]);
 });
 
 test("Auto Mix generalises to a third model without UI changes", () => {
@@ -25,7 +26,7 @@ test("Only / Custom modes", () => {
   assert.deepEqual(assignModels(`only:${D}`, 3), [D, D, D]);
   assert.deepEqual(assignModels("custom", 3, [D, C, D, C]), [D, C, D]);
   // unknown or missing custom picks fall back to the Auto Mix choice for that scene
-  assert.deepEqual(assignModels("custom", 4, [D, "gone"]), [D, C, D, D]);
+  assert.deepEqual(assignModels("custom", 4, [D, "gone"]), [D, C, D, I]);
 });
 
 test("summary text (Russian, with correct plural forms)", () => {
