@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { CodexSelection } from "../src/codexModels.ts";
 import type { ComfyClient, Graph } from "../src/comfy.ts";
@@ -9,7 +9,7 @@ import { MAX_FRAMES, autoMix, type ImageModelAssignment, type ImageModelId } fro
 import { runErrorCode, type ErrorCode } from "../src/errors.ts";
 import { listCollections } from "./collections.ts";
 import { buildPreferenceContext } from "./promptEvolution.ts";
-import { writeAtomic } from "../src/regenerate.ts";
+import { writeAtomic } from "../src/persistence.ts";
 import { loadSource, parseFrame, parsePositive, parseVariant, frameCountOf, reserve, runRegeneration } from "../src/regenerate.ts";
 
 export type RunStatus = "idle" | "planning" | "generating" | "completed" | "failed";
@@ -224,52 +224,43 @@ export class AutopilotRunner {
       errorCode: undefined as ErrorCode | undefined,
       plans: [] as unknown[],
     };
-    const saveBatch = () => writeFile(join(batchDir, "batch-plan.json"), JSON.stringify(batch, null, 2));
-    await saveBatch();
-    this.state = { ...this.state, runId: basename(batchDir) };
+    const saveBatch = () => writeAtomic(join(batchDir, "batch-plan.json"), JSON.stringify(batch, null, 2));
+    try {
+      await saveBatch();
+      this.state = { ...this.state, runId: basename(batchDir) };
 
-    // NS-020: Preference Memory is built by local code only (no Codex). If that fails the run goes on WITHOUT it and says so
-    // (state.evolution + the snapshot); it never pretends to have been applied.
-    const evo: { enabled: boolean; applied: boolean; reason?: string; error?: string } = { enabled: promptEvolution, applied: false };
-    let preferences = "";
-    let ctx: Awaited<ReturnType<typeof buildPreferenceContext>> | null = null;
-    if (promptEvolution) {
-      try {
-        ctx = await (this.deps.preferenceContext ?? buildPreferenceContext)(collectionsDir);
-        preferences = ctx.text;
-        evo.applied = preferences.length > 0;
-        if (!evo.applied) evo.reason = ctx.memory.status === "empty" ? "no ratings yet" : "not enough consistent data yet";
-      } catch (e) {
-        evo.error = (e as Error).message;
-        evo.reason = "the preference memory could not be built; generation continues without it";
+      // NS-020: Preference Memory is built by local code only (no Codex). If that fails the run goes on WITHOUT it and says so
+      // (state.evolution + the snapshot); it never pretends to have been applied.
+      const evo: { enabled: boolean; applied: boolean; reason?: string; error?: string } = { enabled: promptEvolution, applied: false };
+      let preferences = "";
+      let ctx: Awaited<ReturnType<typeof buildPreferenceContext>> | null = null;
+      if (promptEvolution) {
+        try {
+          ctx = await (this.deps.preferenceContext ?? buildPreferenceContext)(collectionsDir);
+          preferences = ctx.text;
+          evo.applied = preferences.length > 0;
+          if (!evo.applied) evo.reason = ctx.memory.status === "empty" ? "no ratings yet" : "not enough consistent data yet";
+        } catch (e) {
+          evo.error = (e as Error).message;
+          evo.reason = "the preference memory could not be built; generation continues without it";
+        }
       }
-    }
-    batch.promptEvolution = { enabled: evo.enabled, applied: evo.applied };
-    this.state = { ...this.state, evolution: evo };
-    // The snapshot of what this run used. Written once, before Codex is called, and never changed afterwards.
-    await writeAtomic(
-      join(batchDir, "preference-context.json"),
-      JSON.stringify({ version: 1, createdAt: new Date().toISOString(), enabled: evo.enabled, applied: evo.applied, reason: evo.reason, error: evo.error, memory: ctx?.memory ?? null, text: preferences }, null, 2),
-    );
-    await saveBatch();
+      batch.promptEvolution = { enabled: evo.enabled, applied: evo.applied };
+      this.state = { ...this.state, evolution: evo };
+      // The snapshot of what this run used. Written once, before Codex is called, and never changed afterwards.
+      await writeAtomic(
+        join(batchDir, "preference-context.json"),
+        JSON.stringify({ version: 1, createdAt: new Date().toISOString(), enabled: evo.enabled, applied: evo.applied, reason: evo.reason, error: evo.error, memory: ctx?.memory ?? null, text: preferences }, null, 2),
+      );
+      await saveBatch();
 
-    let r: BatchResult;
-    try {
       const avoid = (await listCollections(collectionsDir, 20)).map((c) => c.title);
-      r = await this.deps.plan({ theme, avoid, count, composition, models: imageModels.models, model: sel.model, reasoningEffort: sel.reasoningEffort, ...(preferences ? { preferences } : {}) }); // all plans are validated before any GPU work
-    } catch (e) {
-      batch.status = "failed";
-      batch.error = (e as Error).message;
-      batch.errorCode = runErrorCode(e);
-      await saveBatch().catch(() => {});
-      throw e; // no ComfyUI jobs, no second Codex call
-    }
-    codexMeta.seconds = r.ms / 1000;
-    codexMeta.tokens = r.tokens;
-    batch.plans = r.plans;
-    await saveBatch();
+      const r = await this.deps.plan({ theme, avoid, count, composition, models: imageModels.models, model: sel.model, reasoningEffort: sel.reasoningEffort, ...(preferences ? { preferences } : {}) }); // all plans are validated before any GPU work
+      codexMeta.seconds = r.ms / 1000;
+      codexMeta.tokens = r.tokens;
+      batch.plans = r.plans;
+      await saveBatch();
 
-    try {
       for (const [i, plan] of r.plans.entries()) {
         const slug = slugify(plan.concept.title);
         const id = `${new Date().toISOString().slice(0, 10)}-${slug}-${Date.now().toString(36)}`;
@@ -293,14 +284,19 @@ export class AutopilotRunner {
         this.state = { ...this.state, finished: [...this.state.finished, id] };
       }
       batch.status = "done";
+      await saveBatch();
       this.state = { ...this.state, status: "completed", currentFrame: undefined, done: frames * variations * count, finishedAt: new Date().toISOString() };
     } catch (e) {
       batch.status = "failed";
       batch.error = (e as Error).message;
       batch.errorCode = runErrorCode(e);
+      // Persist failures from preparation, snapshot, planning AND generation. Preserve the original error if this also fails.
+      try {
+        await saveBatch();
+      } catch (saveError) {
+        log?.(`Could not save failed run status: ${(saveError as Error).message}`);
+      }
       throw e; // stops the batch: no further collections, nothing resubmitted
-    } finally {
-      await saveBatch();
     }
   }
 }

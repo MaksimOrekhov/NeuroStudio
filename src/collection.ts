@@ -1,10 +1,11 @@
 import { randomInt, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { modelIndex, type ImageModelAssignment } from "./imageModels.ts";
 import type { Resolved } from "./composition.ts";
 import { ComfyUnavailableError, MODELS, applyParams, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
 import type { PromptPlan } from "./promptPlan.ts";
+import { writeAtomic } from "./persistence.ts";
 
 const SEED_MAX = 2 ** 48 - 1;
 
@@ -117,7 +118,7 @@ export async function runCollection(opts: {
   const log = opts.log ?? (() => {});
   const frameTimeoutMs = opts.frameTimeoutMs ?? 20 * 60_000;
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "prompt-plan.json"), JSON.stringify(plan, null, 2));
+  await writeAtomic(join(dir, "prompt-plan.json"), JSON.stringify(plan, null, 2));
 
   const m: Manifest = {
     title: plan.concept.title,
@@ -131,10 +132,12 @@ export async function runCollection(opts: {
     frames: jobs.map((j) => ({ frame: j.frame, variant: j.variant, model: j.model, seed: j.seed, status: "pending" })),
   };
   const save = async () => {
-    await writeFile(join(dir, "collection.json"), JSON.stringify(m, null, 2));
+    await writeAtomic(join(dir, "collection.json"), JSON.stringify(m, null, 2));
     opts.onProgress?.(m);
   };
   const t0 = Date.now();
+  let current: FrameRecord | undefined;
+  let failure: unknown;
 
   try {
     await client.systemStats();
@@ -147,6 +150,7 @@ export async function runCollection(opts: {
 
     for (const [i, job] of jobs.entries()) {
       const rec = m.frames[i];
+      current = rec;
       const name = job.file;
       const tj = Date.now();
       log(`[${i + 1}/${jobs.length}] ${name} ${job.model}: submitting`);
@@ -163,29 +167,36 @@ export async function runCollection(opts: {
         throw e;
       }
       const png = await client.download(images[0]);
-      rec.png = `${name}.png`;
-      rec.seconds = (Date.now() - tj) / 1000;
-      rec.status = "done";
-      await writeFile(join(dir, rec.png), png);
-      await writeFile(
+      const seconds = (Date.now() - tj) / 1000;
+      await writeAtomic(join(dir, `${name}.png`), png);
+      await writeAtomic(
         join(dir, `${name}.json`),
-        JSON.stringify({ frame: job.frame, model: job.model, summary: job.summary, variant: job.variant, seed: job.seed, promptId: rec.promptId, seconds: rec.seconds, image: images[0], graph: job.graph, history }, null, 2),
+        JSON.stringify({ frame: job.frame, model: job.model, summary: job.summary, variant: job.variant, seed: job.seed, promptId: rec.promptId, seconds, image: images[0], graph: job.graph, history }, null, 2),
       );
+      rec.png = `${name}.png`;
+      rec.seconds = seconds;
+      rec.status = "done";
       await save();
       log(`    done in ${rec.seconds.toFixed(1)}s -> ${rec.png}`);
+      current = undefined;
     }
     m.status = "done";
   } catch (e) {
+    failure = e;
     m.status = "failed";
-    const cur = m.frames.find((f) => f.status === "submitted" || f.status === "failed" || f.status === "timeout") ?? m.frames.find((f) => f.status === "pending");
-    if (cur) {
-      cur.error = (e as Error).message;
-      if (cur.status === "pending" || cur.status === "submitted") cur.status = "failed";
+    if (current) {
+      current.error = (e as Error).message;
+      if (current.status !== "timeout") current.status = "failed";
     }
     throw Object.assign(e as Error, { manifest: m });
   } finally {
     m.comfySeconds = (Date.now() - t0) / 1000;
-    await save();
+    try {
+      await save();
+    } catch (e) {
+      if (!failure) throw e;
+      log(`Could not save collection status: ${(e as Error).message}`);
+    }
   }
   return m;
 }

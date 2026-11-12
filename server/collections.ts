@@ -1,8 +1,8 @@
-import { readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { Generation, Manifest } from "../src/collection.ts";
 import type { PromptPlan } from "../src/promptPlan.ts";
-import { io, writeAtomic } from "../src/regenerate.ts";
+import { io, writeAtomic } from "../src/persistence.ts";
 
 export interface FrameView {
   frame: number;
@@ -136,14 +136,24 @@ export function exportStatus(c: CollectionView): ExportStatus {
   return { ready: true, resolved };
 }
 
-async function readSelections(dir: string, id: string): Promise<Record<string, number>> {
+async function loadSelections(dir: string, id: string): Promise<Record<string, number>> {
+  let text: string;
   try {
-    const raw = JSON.parse(await readFile(join(dir, id, "selections.json"), "utf8")) as Record<string, unknown>;
-    return Object.fromEntries(Object.entries(raw).filter(([k, v]) => /^[1-4]$/.test(k) && Number.isInteger(v))) as Record<string, number>;
-  } catch {
-    return {};
+    text = await readFile(join(dir, id, "selections.json"), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw new SelectionError(`cannot read selections.json: ${(e as Error).message}`);
+  }
+  try {
+    const raw = JSON.parse(text);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.entries(raw).some(([k, v]) => !/^[1-4]$/.test(k) || !Number.isInteger(v) || (v as number) < 1)) throw new Error("unexpected structure");
+    return raw;
+  } catch (e) {
+    throw new SelectionError(`selections.json cannot be used: ${(e as Error).message}`);
   }
 }
+
+const readSelections = (dir: string, id: string) => loadSelections(dir, id).catch(() => ({}));
 
 /**
  * Reads image-feedback.json strictly. A missing file (ENOENT) is "no feedback". Anything else that stops the file from being
@@ -175,17 +185,32 @@ async function loadImageFeedback(dir: string, id: string): Promise<{ images: Rec
   return { images: out, unreadable: null };
 }
 
-async function readFeedback(dir: string, id: string): Promise<Feedback | null> {
+async function loadFeedback(dir: string, id: string): Promise<Feedback | null> {
+  let text: string;
   try {
-    const raw = JSON.parse(await readFile(join(dir, id, "feedback.json"), "utf8")) as Partial<Feedback>;
+    text = await readFile(join(dir, id, "feedback.json"), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new FeedbackError(`cannot read feedback.json: ${(e as Error).message}`);
+  }
+  try {
+    const raw = JSON.parse(text) as Partial<Feedback>;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || (raw.version !== undefined && raw.version !== 1)
+      || (raw.rating !== undefined && raw.rating !== null && (!Number.isInteger(raw.rating) || raw.rating < 1 || raw.rating > 5))
+      || (raw.tags !== undefined && (!Array.isArray(raw.tags) || raw.tags.some((t) => !(FEEDBACK_TAGS as readonly string[]).includes(t))))
+      || (raw.note !== undefined && typeof raw.note !== "string")
+      || (raw.updatedAt !== undefined && typeof raw.updatedAt !== "string")) throw new Error("unexpected structure");
     const rating = Number.isInteger(raw.rating) && raw.rating! >= 1 && raw.rating! <= 5 ? raw.rating! : null;
     const tags = Array.isArray(raw.tags) ? raw.tags.filter((t): t is string => (FEEDBACK_TAGS as readonly string[]).includes(t as string)) : [];
     const note = typeof raw.note === "string" ? raw.note.slice(0, FEEDBACK_NOTE_MAX) : "";
     return { version: 1, rating, tags, note, updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : "" };
-  } catch {
-    return null; // missing (old collection) or unreadable: behaves as "no feedback"
+  } catch (e) {
+    throw new FeedbackError(`feedback.json cannot be used: ${(e as Error).message}`);
   }
 }
+
+// Keep the existing display contract; writes use the strict reader and never replace unreadable data.
+const readFeedback = (dir: string, id: string) => loadFeedback(dir, id).catch(() => null);
 
 export async function readCollection(dir: string, id: string, activeId?: string): Promise<CollectionView | null> {
   if (!ID.test(id)) return null;
@@ -293,15 +318,33 @@ export function safeImagePath(dir: string, id: string, file: string): string | n
 
 export class SelectionError extends Error {}
 
+const selectionLocks = new Map<string, Promise<unknown>>();
+const feedbackLocks = new Map<string, Promise<unknown>>();
+
+/** In-process queue; a failed operation cannot poison later saves, and settled keys are released. */
+function queued<T>(locks: Map<string, Promise<unknown>>, dir: string, id: string, task: () => Promise<T>): Promise<T> {
+  const path = resolve(dir, id);
+  const key = process.platform === "win32" ? path.toLowerCase() : path;
+  const run = (locks.get(key) ?? Promise.resolve()).catch(() => undefined).then(task);
+  locks.set(key, run);
+  const release = () => { if (locks.get(key) === run) locks.delete(key); };
+  void run.then(release, release);
+  return run;
+}
+
 /**
  * Marks `variant` as the best of `frame` (null clears it). Only a finished image can be selected.
  * Writes selections.json inside the collection; PNGs are never touched.
  */
-export async function setSelection(dir: string, id: string, frame: unknown, variant: unknown): Promise<Record<string, number>> {
+export function setSelection(dir: string, id: string, frame: unknown, variant: unknown): Promise<Record<string, number>> {
+  return queued(selectionLocks, dir, id, () => applySelection(dir, id, frame, variant));
+}
+
+async function applySelection(dir: string, id: string, frame: unknown, variant: unknown): Promise<Record<string, number>> {
   const c = await readCollection(dir, id);
   if (!c) throw new SelectionError("collection not found");
   if (typeof frame !== "number" || !Number.isInteger(frame) || frame < 1 || frame > c.frameCount) throw new SelectionError(`frame must be 1-${c.frameCount}`);
-  const sel = { ...c.selections };
+  const sel = await loadSelections(dir, id);
   if (variant === null) {
     delete sel[String(frame)];
   } else {
@@ -310,8 +353,7 @@ export async function setSelection(dir: string, id: string, frame: unknown, vari
     sel[String(frame)] = variant;
   }
   const file = join(dir, id, "selections.json");
-  await writeFile(file + ".tmp", JSON.stringify(sel, null, 2));
-  await rename(file + ".tmp", file);
+  await writeAtomic(file, JSON.stringify(sel, null, 2));
   return sel;
 }
 
@@ -321,7 +363,11 @@ export class FeedbackError extends Error {}
  * Replaces the feedback of a collection. Everything is optional (rating null = no rating).
  * Entirely empty feedback removes feedback.json. Only feedback.json is written, atomically.
  */
-export async function setFeedback(dir: string, id: string, input: unknown): Promise<Feedback | null> {
+export function setFeedback(dir: string, id: string, input: unknown): Promise<Feedback | null> {
+  return queued(feedbackLocks, dir, id, () => applyFeedback(dir, id, input));
+}
+
+async function applyFeedback(dir: string, id: string, input: unknown): Promise<Feedback | null> {
   if (!ID.test(id) || !(await readCollection(dir, id))) throw new FeedbackError("collection not found");
   if (typeof input !== "object" || input === null || Array.isArray(input)) throw new FeedbackError("body must be an object");
   const { rating = null, tags = [], note = "" } = input as Record<string, unknown>;
@@ -331,13 +377,17 @@ export async function setFeedback(dir: string, id: string, input: unknown): Prom
   if (note.length > FEEDBACK_NOTE_MAX) throw new FeedbackError(`note is too long (max ${FEEDBACK_NOTE_MAX} characters)`);
   const uniqueTags = FEEDBACK_TAGS.filter((t) => tags.includes(t));
   const file = join(dir, id, "feedback.json");
+  await loadFeedback(dir, id); // refuse both replacement and deletion when the existing data cannot be read
   if (rating === null && !uniqueTags.length && !note.trim()) {
-    await unlink(file).catch(() => undefined);
+    try {
+      await io.unlink(file);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
     return null;
   }
   const fb: Feedback = { version: 1, rating, tags: uniqueTags, note: note.trim(), updatedAt: new Date().toISOString() };
-  await writeFile(file + ".tmp", JSON.stringify(fb, null, 2));
-  await rename(file + ".tmp", file);
+  await writeAtomic(file, JSON.stringify(fb, null, 2));
   return fb;
 }
 

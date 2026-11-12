@@ -2,11 +2,13 @@
 // The source of every setting is the ComfyUI graph that was saved next to the source variant (<scene-name>.json):
 // only positive prompt (when edited), seed and filename prefix change. Existing images, sidecars and prompts are never touched.
 import { randomInt, randomUUID } from "node:crypto";
-import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { FIELDS, ComfyUnavailableError, applyParams, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
 import type { FrameRecord, Manifest } from "./collection.ts";
 import type { ErrorCode } from "./errors.ts";
+import { io, writeAtomic } from "./persistence.ts";
+export { io, writeAtomic } from "./persistence.ts";
 
 const SEED_MAX = 2 ** 48 - 1;
 /** Matches the `-vNN` file name template (and safeImagePath in the server): variant numbers above 99 cannot be stored. */
@@ -140,33 +142,6 @@ async function exists(p: string): Promise<boolean> {
     () => true,
     () => false,
   );
-}
-
-/** File operations used for every write; a plain object so tests can inject EPERM/EBUSY and disk errors. */
-export const io = { writeFile, rename, unlink };
-
-/**
- * Atomic replace: write a temp file, then rename it over the target. On Windows the rename can fail with EPERM/EBUSY/EACCES while
- * the UI is reading the file, so it is retried briefly. If it still fails the error is thrown and the existing file is left exactly
- * as it was (valid, complete): it is NEVER truncated or overwritten in place, because a crash mid-write would destroy it.
- */
-export async function writeAtomic(file: string, text: string): Promise<void> {
-  const tmp = `${file}.tmp`;
-  try {
-    await io.writeFile(tmp, text);
-    for (let i = 0; ; i++) {
-      try {
-        await io.rename(tmp, file);
-        return;
-      } catch (e) {
-        if (i >= 5 || !["EPERM", "EBUSY", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e;
-        await new Promise((r) => setTimeout(r, 20 * (i + 1)));
-      }
-    }
-  } catch (e) {
-    await io.unlink(tmp).catch(() => {});
-    throw e;
-  }
 }
 
 const saveManifest = (cdir: string, m: Manifest) => writeAtomic(join(cdir, "collection.json"), JSON.stringify(m, null, 2));
