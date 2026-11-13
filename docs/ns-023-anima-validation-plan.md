@@ -1,0 +1,107 @@
+# NS-023 — План проверки гипотез Anima (A/B-тесты на GPU)
+
+Статус: **план и подготовленный пилот; GPU-тесты не запускались**. Источник гипотез — локальное исследование `docs/ns-023-anima-prompt-research.md` (в PR не включено). Его выводы делятся на подтверждённые первоисточниками факты, рекомендации авторов моделей и **наши гипотезы**; пока тест не проведён, ничто из этого не считается доказанным для NeuroStudio. До результатов теста в production **не меняются**: quality prefix, `solo female`, `adult woman` / возраст / `huge breast`, формат блоков, стандартные ракурсы из hard constraints, negative prompt, разрешение, sampler, CFG, steps и назначение моделей.
+
+## 1. Общие правила всех экспериментов
+
+- **Одна гипотеза = один эксперимент = одно изменение.** Остальное идентично.
+- Для каждого теста фиксируются и записываются: checkpoint, seed, CFG, sampler, scheduler, steps, denoise, разрешение (aspect ratio, мегапиксели, multiple), negative prompt, text encoder, VAE, состояние Turbo/LoRA, хэш файла workflow, полный текст positive, версия ComfyUI, GPU и драйвер. Первые девять пунктов для пилота скрипт читает из самого workflow и пишет в `spec.json`; версию ComfyUI и GPU записывает человек.
+- **Несколько seeds.** Полный тест: 6 фиксированных seeds (`101, 2024, 31337, 424242, 777001, 9090909`) на каждую концепцию. Пилот: первые 2 (`101, 2024`).
+- **Слепая оценка.** Файлы называются `X`/`Y`; соответствие вариантам лежит в `key.json`, который открывается только после оценки. В каждой концепции «текущий» вариант бывает и `X`, и `Y` (порядок задан заранее).
+- **Что оценивать** (шкала 1–5 для каждого изображения): соответствие описанию (чек-лист: причёска, одежда, поза, место, свет, ракурс), анатомия (кисти, пальцы, шея, пропорции; считать ошибки), лицо и внешность, одежда (слияние предметов, лишние детали), окружение (читается ли место, нет ли странных или декоративных объектов), глянец и материалы, композиция, **привлекательность для NeuroDreams** и общий стиль. Соответствие тегам — только один из критериев: вариант, точнее выполняющий текст, но менее красивый или с анатомическими ошибками, не выигрывает.
+- **Решение по полному тесту** (не по пилоту): вариант принимается, если на каждой из концепций он не хуже по анатомии минимум на 4 из 6 seeds, выигрывает по общей предпочтительности или привлекательности, и пользователь подтверждает это глазами. Одно удачное изображение ничего не доказывает.
+
+## 2. Эксперименты (каждый запускается отдельно)
+
+Концепции для A–D: **K1** — дневная терраса у моря, повседневный образ, сидя; **K2** — вечерняя квартира, облегающее атласное платье, стоя, вид сбоку (полный текст ниже). Позднее добавляется K3 (минимальная студия, лёжа).
+
+### Эксперимент A — Quality prefix
+
+| | Prefix |
+|---|---|
+| Текущий | `realistic, masterpiece, best quality, ultra detailed, absurdres, sharp focus, intricate details, cinematic dramatic lighting, strong chiaroscuro,` |
+| Кандидат | `realistic, masterpiece, best quality, absurdres,` |
+
+Кандидат — **только удаление** пяти тегов (`ultra detailed`, `sharp focus`, `intricate details`, `cinematic dramatic lighting`, `strong chiaroscuro`): ни одного нового тега не добавляется (поэтому без `highres`, `safe`, `sensitive`, `score_7`, `newest`). Так любое различие объясняется удалением. `masterpiece`, `best quality`, `absurdres` и `realistic` не тронуты (первые три — официальные quality/meta-теги Anima). Остальной текст, параметры и seeds те же. Свет остаётся только в блоке сцены, который уже описывает его в каждом промпте.
+
+Гипотезы (не факты): без фиксированного драматичного света дневные и мягкие сцены выглядят естественнее; меньше лишнего декора в одежде и фоне (подозрение на `intricate details`); тени и контраст у вечерних сцен могут ослабнуть, и это тоже результат.
+
+### Эксперимент B — Канонические теги (две независимые части)
+
+Выполняются порознь, каждая против текущей формулировки; к качеству и разрешению не примешиваются, prefix текущий.
+
+- **B1:** `solo female` → `1girl, solo`. `adult woman`, возраст и `huge breast` остаются как есть. `mature female` и `sensitive` не добавляются.
+- **B2:** описательные ракурсы → канонические: `front view, waist-up composition` → `looking at viewer, upper body`; `head-to-mid-thigh composition` → `cowboy shot`; `side view` → `from side`; `rear three-quarter view` → `from behind, looking back`. Остальное без изменений.
+
+Примечание: стандартные ракурсы записаны в hard constraints (раздел A Creative Director). Даже при победе B2 их изменение — отдельное решение с правкой раздела A.
+
+### Эксперимент C — Гибридный промпт
+
+Текущая структура (теги и фразы через запятую) против гибрида: короткие теги для героини, одежды и ракурса плюс 2–3 законченных предложения о позе, месте и свете. Содержание сцены идентично; prefix текущий; никаких новых тегов качества, safety и т. п. Гипотеза: предложения лучше передают связи «поза ↔ опора ↔ место ↔ свет».
+
+### Эксперимент D — Разрешение
+
+Текущее (`2:3`, 3 Мп, multiple 20) против более умеренного с тем же соотношением сторон (`2:3`, 1,5 Мп). Меняется только параметр `megapixels` узла `91`; positive, negative, seeds и все остальные параметры идентичны. Фактический размер записывается по сохранённому PNG. Позже, отдельно, для IllustrijN: ≈1 Мп (около 832×1216, рекомендация автора чекпоинта).
+
+### Что остаётся за пределами этих четырёх
+
+Отдельными, более поздними экспериментами (после A–D, по одному фактору): `sensitive`/`safe`, `score_7`, `newest`, `mature female`, `realistic` есть/нет, dataset-тег `deviantart`, очистка negative (дубли, `nsfw, explicit`), sampler, scheduler, CFG, steps. Это инфраструктурные изменения workflow, они не входят в NS-023.
+
+## 3. Минимальный пилот (подготовлен, не запущен)
+
+Только эксперимент A: **1 модель (Crimson Oath) × 2 концепции × 2 seeds × 2 prefix = 8 изображений**, 4 пары. Назначение: проверить, что гипотеза стоит большего теста. **Победитель по 8 картинкам не объявляется.**
+
+Подготовка (без GPU, без обращения к ComfyUI):
+
+```bash
+npx tsx scripts/ns023-pilot.ts
+```
+
+Создаёт `output/ns023-pilot-01/` (в Git не попадает):
+
+| Файл | Содержимое |
+|---|---|
+| `spec.json` | все фиксированные параметры, прочитанные из workflow (включая sha256 файла workflow), оба prefix, обе концепции, список задач |
+| `graphs/<имя>.api.json` | готовый граф ComfyUI для каждого из 8 изображений (можно импортировать вручную; в графе виден prompt, то есть и prefix, поэтому не открывать до оценки) |
+| `scores.csv` | пустая таблица: по строке на пару, 1–5 по каждому критерию для `X` и `Y`, общий выбор `X/Y/tie`, заметки |
+| `key.json` | какой префикс скрыт за `X`/`Y` (**открывать после оценки**) |
+
+Генерация (только по решению пользователя, нужен GPU и запущенный ComfyUI; использует существующий `runCollection`, ~58 с на кадр, около 8 минут):
+
+```bash
+npx tsx scripts/ns023-pilot.ts --execute
+```
+
+Изображения: `output/ns023-pilot-01/run/K1-s101-X.png`, `…-Y.png` и т. д. Сравнивать попарно (`X` против `Y` в одной строке `scores.csv`). Рядом лежат одноимённые `.json` с графом, а ComfyUI кладёт prompt в метаданные PNG: не открывать их и не смотреть метаданные до оценки.
+
+Какой из `X`/`Y` несёт текущий prefix, задано заранее (константа `CURRENT_IS` в скрипте) и записано в `key.json`; в этом документе таблица соответствия намеренно не приводится, чтобы не нарушать слепую оценку.
+
+**Тексты** (одинаковы в обоих вариантах, кроме prefix; написаны вручную в формате house format, не Codex):
+
+K1: `solo female, adult woman, 33 years old, original character, mature face, adult body, huge breast,` / `dark brown skin, warm brown eyes, thick straight eyebrows, short natural black curls pulled back with a wide cream headband, broad relaxed smile,` / `sitting on a low whitewashed terrace wall, one palm flat on the stone beside her for support, bare feet on the tiles, looking toward the viewer,` / `white cotton shirt knotted above the waist with rolled sleeves, high-waisted blue denim shorts, small gold stud earrings,` / `sunny seaside terrace, whitewashed wall, terracotta pots with lemon trees, blue sea and a clear horizon behind her,` / `slightly elevated three-quarter view, full seated composition, bright midday sunlight from the upper left, warm highlights on skin and cotton, glossy semi-realistic illustration`
+
+K2: `solo female, adult woman, 30 years old, original character, mature face, adult body, huge breast,` / `fair skin, oval face, grey-green eyes, straight dark eyebrows, deep red lipstick, chin-length black hair in a sleek blunt bob, short blunt bangs,` / `standing beside a tall window, one hand on the window frame edge, looking at the viewer over her shoulder,` / `fitted plum satin midi dress, high neck, sleeveless, side slit, thin gold bracelet,` / `modern apartment living room at evening, low sofa, floor lamp, city lights through the window,` / `side view, waist-up composition, warm lamp light from the left, cool blue light from the window, glossy illustrative semi-realism`
+
+Тесты `tests/ns023-pilot.test.ts` (без GPU) проверяют, что внутри пары графы совпадают с точностью до prompt и имени файла, остальные узлы совпадают с production workflow, текущий prefix взят из раздела A, кандидат только удаляет теги, промпты проходят правила house format, метки слепые и сбалансированные.
+
+### Как читать результат пилота
+
+- **Идти дальше** — кандидат не выглядит хуже по анатомии минимум в 3 парах из 4 и в оценках видно устойчивое различие (например, в декоре фона, свете, одежде). Тогда следующий ограниченный шаг: тот же эксперимент A на **Duskrose и IllustrijN** (те же 2 концепции × 2 seeds × 2 prefix = по 8 изображений на модель) и затем полный тест на 6 seeds.
+- **Остановиться или переформулировать** — кандидат заметно хуже в 3 парах из 4 или ломает анатомию. Тогда удалять теги по одному.
+- **Неоднозначно** — различий не видно: это допустимый исход; значит, prefix не рычаг, и усилия лучше потратить на планирование (Creative Director), а не на теги.
+
+## 4. Почему не 48 изображений сейчас
+
+Предложенный в исследовании первый этап — 4 варианта (текущий, облегчённый prefix, гибрид, чистый естественный язык) × 2 концепции × 6 seeds на Crimson Oath = 48 кадров, около 47 минут GPU. Откладывается, потому что:
+
+1. Он смешивает несколько гипотез (prefix, канонические теги, гибрид, естественный язык): при результате нельзя понять, что именно сработало. Здесь гипотезы проверяются по одной.
+2. Исследование не подтверждает, что хотя бы одна из них верна именно для наших моделей; дешевле сначала проверить самую вероятную (удаление `intricate details` и фиксированного драматичного света) на 8 кадрах.
+3. Затраты GPU и времени оправданы только после того, как пилот покажет, что есть что измерять.
+4. Часть различий (разрешение, sampler) относится к workflow, а не к промпту, и смешивать их с текстом нельзя.
+
+## 5. Что дальше
+
+1. Пользователь решает, запускать ли пилот (`--execute`) и оценивает 4 пары слепо.
+2. При «идти дальше»: пилот на Duskrose и IllustrijN (16 изображений), затем эксперимент A на 6 seeds.
+3. Затем по одному: B1, B2, C, D. Каждое принятое изменение вносится в Creative Director и/или workflow отдельным PR.
+4. Любое изменение раздела A (prefix, `1girl`, ракурсы) требует отдельного решения команды: это hard constraints.

@@ -5,6 +5,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FIELDS } from "../src/comfy.ts";
+import { INSTRUCTIVE, flatten } from "../src/untrustedText.ts";
 import { loadComparisons, type Comparisons } from "./comparisons.ts";
 import { listCollections, type CollectionView } from "./collections.ts";
 
@@ -193,13 +194,9 @@ async function actualPrompt(dir: string, id: string, png: string): Promise<strin
 
 // ---------- text safety ----------
 
-/** Phrases that read like instructions to the model. A stored prompt containing one is never quoted. */
-const INSTRUCTIVE = /\b(ignore|disregard|forget|override|overrule|bypass|jailbreak|system prompt|developer message|instructions?|you must|you should|you are|do not|don't|never|always|hard constraint|creative director|assistant|codex)\b/i;
-
-/** Data, not instructions: one line, no structural characters, bounded length. null = unsafe, do not use. */
+/** Data, not instructions: one line, no structural characters, bounded length. null = unsafe, do not use. The rules live in src/untrustedText.ts (shared with the NS-023 visual history). */
 export function sanitizePrompt(text: string): string | null {
-  // eslint-disable-next-line no-control-regex
-  let t = text.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/[`<>{}[\]|\\#]/g, " ").replace(/"/g, "'").replace(/-{3,}|={3,}|\*{2,}/g, " ").replace(/\s+/g, " ").trim();
+  let t = flatten(text);
   if (!t || INSTRUCTIVE.test(t)) return null;
   if (t.length > EXAMPLE_CHARS) t = `${t.slice(0, EXAMPLE_CHARS).replace(/[\s,;:(]+\S*$/, "")}…`;
   return t;
