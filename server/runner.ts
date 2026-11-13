@@ -9,6 +9,7 @@ import { MAX_FRAMES, autoMix, type ImageModelAssignment, type ImageModelId } fro
 import { runErrorCode, type ErrorCode } from "../src/errors.ts";
 import { listCollections } from "./collections.ts";
 import { buildPreferenceContext } from "./promptEvolution.ts";
+import { loadVisualHistory } from "../src/visualHistory.ts";
 import { writeAtomic } from "../src/persistence.ts";
 import { loadSource, parseFrame, parsePositive, parseVariant, frameCountOf, reserve, runRegeneration } from "../src/regenerate.ts";
 
@@ -254,8 +255,10 @@ export class AutopilotRunner {
       );
       await saveBatch();
 
-      const avoid = (await listCollections(collectionsDir, 20)).map((c) => c.title);
-      const r = await this.deps.plan({ theme, avoid, count, composition, models: imageModels.models, model: sel.model, reasoningEffort: sel.reasoningEffort, ...(preferences ? { preferences } : {}) }); // all plans are validated before any GPU work
+      const recent = await listCollections(collectionsDir, 20);
+      const avoid = recent.map((c) => c.title);
+      const history = await loadVisualHistory(collectionsDir, recent); // NS-023: "" when nothing can be extracted reliably
+      const r = await this.deps.plan({ theme, avoid, count, composition, models: imageModels.models, model: sel.model, reasoningEffort: sel.reasoningEffort, ...(preferences ? { preferences } : {}), ...(history ? { history } : {}) }); // all plans are validated before any GPU work
       codexMeta.seconds = r.ms / 1000;
       codexMeta.tokens = r.tokens;
       batch.plans = r.plans;

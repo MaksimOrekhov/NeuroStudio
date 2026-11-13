@@ -27,7 +27,7 @@ export async function loadInstructions(path = INSTRUCTIONS_PATH): Promise<string
 }
 
 /** instructions + the request. Format: Prompt Plan, or a Batch Plan {collections: PromptPlan[]} when `asBatch` (default: count > 1; generateBatch always passes true, also for one collection). */
-export function planPrompt(instructions: string, theme?: string, avoid: string[] = [], count = 1, composition?: Composition, models?: readonly string[], asBatch = count > 1, preferences = ""): string {
+export function planPrompt(instructions: string, theme?: string, avoid: string[] = [], count = 1, composition?: Composition, models?: readonly string[], asBatch = count > 1, preferences = "", visualHistory = ""): string {
   const batch = asBatch; // response format: Batch Plan {collections: [...]} even when count = 1 (generateBatch)
   const several = count > 1;
   const themeLine = theme
@@ -50,7 +50,9 @@ The ${count} collections must be substantially different from each other (concep
 
 ---
 Task: ${themeLine}
-${ask}${avoidLine}${distinct}${framesPrompt(models)}${compositionPrompt(composition, models?.length)}${preferences ? `
+${ask}${avoidLine}${visualHistory ? `
+
+${visualHistory}` : ""}${distinct}${framesPrompt(models)}${compositionPrompt(composition, models?.length)}${preferences ? `
 
 ${preferences}` : ""}`;
 }
@@ -123,6 +125,8 @@ export interface BatchOptions extends CodexOptions {
   count: number;
   /** NS-020: Preference Memory text appended to the request (lowest priority). Absent/empty = the request is exactly as before. */
   preferences?: string;
+  /** NS-023: compact visual memory of recent collections (see visualHistory.ts). Absent/empty = the request is exactly as before. */
+  history?: string;
 }
 
 /** Arguments for `codex exec` (no shell). An explicit model beats CODEX_MODEL; Default adds no override at all. */
@@ -218,7 +222,7 @@ export async function batchSchema(count: number, planSchemaPath = SCHEMA, models
 export async function generateBatch(opts: BatchOptions): Promise<BatchResult> {
   const models = opts.models ?? autoMix(MAX_FRAMES);
   const instructions = await loadInstructions();
-  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count, opts.composition, models, true, opts.preferences), await batchSchema(opts.count, SCHEMA, models), timeout(opts, opts.count), opts.launcher, selection(opts));
+  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count, opts.composition, models, true, opts.preferences, opts.history), await batchSchema(opts.count, SCHEMA, models), timeout(opts, opts.count), opts.launcher, selection(opts));
   return { plans: validateBatch(r.json, opts.count, { models }), raw: r.raw, ms: r.ms, tokens: r.tokens };
 }
 
