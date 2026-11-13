@@ -1,7 +1,7 @@
 // NS-023 pilot 01 (quality prefix): the prepared jobs are reproducible and differ only in the prefix. No ComfyUI, no GPU.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MODELS, loadWorkflow } from "../src/comfy.ts";
@@ -10,7 +10,7 @@ import { loadInstructions } from "../src/codex.ts";
 import { validatePlan, type PromptPlan } from "../src/promptPlan.ts";
 import {
   CONCEPTS, CRITERIA, MODEL, PREFIX_CANDIDATE, PREFIX_CURRENT, REMOVED_TAGS, SEEDS, WORKFLOW,
-  assertPairsIdentical, buildPilot, fixedParameters, positiveOf, scoringSheet,
+  PilotError, assertPairsIdentical, buildPilot, executePilot, fixedParameters, positiveOf, preparePilot, scoringSheet,
 } from "../scripts/ns023-pilot.ts";
 
 const base = await loadWorkflow(WORKFLOW);
@@ -114,4 +114,95 @@ test("pilot: the execute path (existing runner, fake client) writes 8 images und
   const pngs = (await readdir(dir)).filter((f) => f.endsWith(".png")).sort();
   assert.equal(pngs.length, 8);
   assert.ok(pngs.every((f) => /^K[12]-s\d+-[XY]\.png$/.test(f)), pngs.join(","));
+});
+
+// ---------- launch safety ----------
+
+function fakeClient(queue: { running?: number; pending?: number } | Error = {}) {
+  const calls = { queue: 0, submit: 0 };
+  const client = {
+    systemStats: async () => ({}),
+    checkDependencies: async () => [],
+    queue: async () => {
+      calls.queue++;
+      if (queue instanceof Error) throw queue;
+      return { queue_running: Array(queue.running ?? 0).fill({}), queue_pending: Array(queue.pending ?? 0).fill({}) };
+    },
+    submit: async () => `p${++calls.submit}`,
+    waitForImages: async () => ({ images: [{ filename: "a.png", subfolder: "", type: "output" }], history: {} }),
+    download: async () => Buffer.from("png"),
+  };
+  return { client: client as never, calls };
+}
+
+const prep = async (out: string) => {
+  const { jobs, key } = buildPilot(base);
+  await preparePilot(out, base, "sha", jobs, key);
+  return jobs;
+};
+
+test("launch safety: preparing again never overwrites scores or the key; the graphs are refreshed", async () => {
+  const out = await mkdtemp(join(tmpdir(), "ns23s-"));
+  const jobs = await prep(out);
+  await writeFile(join(out, "scores.csv"), "my,filled,scores");
+  await writeFile(join(out, "key.json"), "{\"mine\":true}");
+  await writeFile(join(out, "graphs", `${jobs[0].file}.api.json`), "stale");
+  const { jobs: again, key } = buildPilot(base);
+  const r = await preparePilot(out, base, "sha", again, key);
+  assert.deepEqual(r, { keptScores: true, keptKey: true });
+  assert.equal(await readFile(join(out, "scores.csv"), "utf8"), "my,filled,scores");
+  assert.equal(await readFile(join(out, "key.json"), "utf8"), "{\"mine\":true}");
+  assert.notEqual(await readFile(join(out, "graphs", `${jobs[0].file}.api.json`), "utf8"), "stale");
+  assert.equal((await readdir(join(out, "graphs"))).length, 8);
+});
+
+test("launch safety: a first preparation writes everything and needs no ComfyUI client at all", async () => {
+  const out = await mkdtemp(join(tmpdir(), "ns23s-"));
+  const { jobs, key } = buildPilot(base);
+  const r = await preparePilot(out, base, "sha", jobs, key); // the signature has no client: offline by construction
+  assert.deepEqual(r, { keptScores: false, keptKey: false });
+  assert.deepEqual((await readdir(out)).sort(), ["graphs", "key.json", "scores.csv", "spec.json"]);
+});
+
+test("launch safety: a previous run (results or only a manifest) stops --execute before the queue check and any submission", async () => {
+  for (const leftover of ["collection.json", "K1-s101-X.png"]) {
+    const out = await mkdtemp(join(tmpdir(), "ns23s-"));
+    const jobs = await prep(out);
+    await mkdir(join(out, "run"));
+    await writeFile(join(out, "run", leftover), "x");
+    const { client, calls } = fakeClient();
+    await assert.rejects(executePilot(out, jobs, client, () => {}), (e: Error) => e instanceof PilotError && /previous run/.test(e.message) && /never resumes or resubmits/.test(e.message));
+    assert.deepEqual(calls, { queue: 0, submit: 0 });
+  }
+});
+
+test("launch safety: a busy ComfyUI queue (running or pending) stops --execute before any submission", async () => {
+  for (const busy of [{ running: 1 }, { pending: 2 }]) {
+    const out = await mkdtemp(join(tmpdir(), "ns23s-"));
+    const jobs = await prep(out);
+    const { client, calls } = fakeClient(busy);
+    await assert.rejects(executePilot(out, jobs, client, () => {}), (e: Error) => e instanceof PilotError && /queue is not empty/.test(e.message));
+    assert.deepEqual(calls, { queue: 1, submit: 0 });
+    assert.deepEqual(await readdir(out).then((n) => n.includes("run")), false); // nothing started
+  }
+});
+
+test("launch safety: an unreachable ComfyUI stops --execute before any submission", async () => {
+  const out = await mkdtemp(join(tmpdir(), "ns23s-"));
+  const jobs = await prep(out);
+  const { client, calls } = fakeClient(new Error("ComfyUI not reachable"));
+  await assert.rejects(executePilot(out, jobs, client, () => {}), /not reachable/);
+  assert.equal(calls.submit, 0);
+});
+
+test("launch safety: an empty queue and no previous run submits the 8 jobs once; a second --execute is refused", async () => {
+  const out = await mkdtemp(join(tmpdir(), "ns23s-"));
+  const jobs = await prep(out);
+  const first = fakeClient();
+  await executePilot(out, jobs, first.client, () => {});
+  assert.equal(first.calls.submit, 8);
+  assert.equal((await readdir(join(out, "run"))).filter((f) => f.endsWith(".png")).length, 8);
+  const second = fakeClient();
+  await assert.rejects(executePilot(out, jobs, second.client, () => {}), /previous run/);
+  assert.deepEqual(second.calls, { queue: 0, submit: 0 });
 });

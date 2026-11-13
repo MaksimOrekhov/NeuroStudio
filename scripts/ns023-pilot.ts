@@ -1,10 +1,11 @@
 // NS-023 pilot 01 (experiment A, quality prefix): 1 model x 2 concepts x 2 seeds x 2 prefixes = 8 images.
 // Prepares reproducible ComfyUI graphs and a blind scoring sheet. By default it does NOT contact ComfyUI.
-//   npx tsx scripts/ns023-pilot.ts              prepare files in output/ns023-pilot-01/ (no GPU)
-//   npx tsx scripts/ns023-pilot.ts --execute    also generate the 8 images through the existing runner (needs ComfyUI; GPU)
+//   npx tsx scripts/ns023-pilot.ts              prepare files in output/ns023-pilot-01/ (offline, no GPU; never overwrites scores.csv or key.json)
+//   npx tsx scripts/ns023-pilot.ts --execute    also generate the 8 images through the existing runner (needs ComfyUI; GPU).
+//                                               Refuses if a previous run exists or the ComfyUI queue is not empty; never resumes or resubmits.
 // The pilot only checks that the hypothesis is worth a larger test. It does not pick a winner. See docs/ns-023-anima-validation-plan.md.
 import { createHash } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ComfyClient, MODELS, applyParams, loadWorkflow, type Graph } from "../src/comfy.ts";
@@ -140,6 +141,63 @@ export function fixedParameters(base: Graph, workflowSha256: string) {
   };
 }
 
+export class PilotError extends Error {}
+
+/** Writes only when the file does not exist yet. Returns false (and touches nothing) when it does. */
+async function writeOnce(path: string, data: string): Promise<boolean> {
+  try {
+    await writeFile(path, data, { flag: "wx" });
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw e;
+  }
+}
+
+/**
+ * Offline preparation: spec, key, graphs and the blank scoring sheet. Never contacts ComfyUI.
+ * `scores.csv` (your scores) and `key.json` (the blind mapping of the images already made) are write-once:
+ * running this again never overwrites them. spec.json and graphs are reproducible from the code and are refreshed.
+ */
+export async function preparePilot(out: string, base: Graph, workflowSha256: string, jobs: PilotJob[], key: Record<string, { pair: string; prefix: string }>): Promise<{ keptScores: boolean; keptKey: boolean }> {
+  await mkdir(join(out, "graphs"), { recursive: true });
+  await writeAtomic(join(out, "spec.json"), JSON.stringify({ id: PILOT_ID, fixed: fixedParameters(base, workflowSha256), concepts: CONCEPTS, jobs: jobs.map(({ file, pair, seed }) => ({ file, pair, seed })) }, null, 2));
+  for (const j of jobs) await writeAtomic(join(out, "graphs", `${j.file}.api.json`), JSON.stringify(j.graph, null, 2));
+  const keptKey = !(await writeOnce(join(out, "key.json"), JSON.stringify({ note: "Do NOT open before scoring: it says which label carries which prefix.", key }, null, 2)));
+  const keptScores = !(await writeOnce(join(out, "scores.csv"), scoringSheet(jobs)));
+  return { keptScores, keptKey };
+}
+
+type PilotClient = Pick<ComfyClient, "systemStats" | "checkDependencies" | "submit" | "waitForImages" | "download" | "queue">;
+
+/** Refuses when a previous run left anything behind: results or a saved manifest. There is no recovery and no automatic resubmission. */
+export async function assertNoPreviousRun(out: string): Promise<void> {
+  const run = join(out, "run");
+  let names: string[];
+  try {
+    names = await readdir(run);
+  } catch {
+    return; // no run directory: first run
+  }
+  if (names.length) {
+    throw new PilotError(`A previous run already exists in ${run} (${names.includes("collection.json") ? "manifest and/or " : ""}${names.length} file(s)). Nothing was submitted. This script never resumes or resubmits: if you really want a fresh run, move or delete that folder yourself.`);
+  }
+}
+
+/** The first and only submission: refuses on any earlier run, refuses when the ComfyUI queue is not empty, then uses the existing runner. */
+export async function executePilot(out: string, jobs: PilotJob[], client: PilotClient, log: (s: string) => void = console.log): Promise<void> {
+  await assertNoPreviousRun(out);
+  const q = await client.queue(); // unreachable ComfyUI: the error stops us here, before any submission
+  const running = q.queue_running.length;
+  const pending = q.queue_pending.length;
+  if (running || pending) throw new PilotError(`The ComfyUI queue is not empty (${running} running, ${pending} pending). Nothing was submitted. Wait for it to finish or clear it yourself, then run again.`);
+  const plan: PromptPlan = {
+    concept: { title: `NS-023 ${PILOT_ID}`, description: "Quality prefix pilot: current vs candidate.", heroine: "see spec.json" },
+    frames: jobs.map((j) => ({ frame: j.frame, model: MODEL, summary: j.summary, positive: j.positive })),
+  };
+  await runCollection({ plan, jobs, dir: join(out, "run"), client, log });
+}
+
 async function main() {
   const execute = process.argv.includes("--execute");
   const out = join(root, "output", PILOT_ID);
@@ -148,21 +206,20 @@ async function main() {
   const { jobs, key } = buildPilot(base);
   assertPairsIdentical(jobs);
 
-  await mkdir(join(out, "graphs"), { recursive: true });
-  await writeAtomic(join(out, "spec.json"), JSON.stringify({ id: PILOT_ID, fixed: fixedParameters(base, sha), concepts: CONCEPTS, jobs: jobs.map(({ file, pair, seed }) => ({ file, pair, seed })) }, null, 2));
-  await writeAtomic(join(out, "key.json"), JSON.stringify({ note: "Do NOT open before scoring: it says which label carries which prefix.", key }, null, 2));
-  await writeAtomic(join(out, "scores.csv"), scoringSheet(jobs));
-  for (const j of jobs) await writeAtomic(join(out, "graphs", `${j.file}.api.json`), JSON.stringify(j.graph, null, 2));
-  console.log(`Prepared ${jobs.length} jobs (${jobs.length / 2} pairs) in ${out}\nNo ComfyUI contact. ${execute ? "" : "Add --execute to generate the images."}`);
-  if (!execute) return;
-
-  const plan: PromptPlan = {
-    concept: { title: `NS-023 ${PILOT_ID}`, description: "Quality prefix pilot: current vs candidate.", heroine: "see spec.json" },
-    frames: jobs.map((j) => ({ frame: j.frame, model: MODEL, summary: j.summary, positive: j.positive })),
-  };
-  const client = new ComfyClient(process.env.COMFY_URL ?? "http://127.0.0.1:8188");
-  await runCollection({ plan, jobs, dir: join(out, "run"), client, log: console.log });
+  if (execute) await assertNoPreviousRun(out); // before anything is written
+  const kept = await preparePilot(out, base, sha, jobs, key);
+  console.log(`Prepared ${jobs.length} jobs (${jobs.length / 2} pairs) in ${out}.${kept.keptScores ? " Existing scores.csv kept." : ""}${kept.keptKey ? " Existing key.json kept." : ""}`);
+  if (!execute) {
+    console.log("Offline only: ComfyUI was not contacted. Add --execute to generate the images (needs ComfyUI and the GPU).");
+    return;
+  }
+  await executePilot(out, jobs, new ComfyClient(process.env.COMFY_URL ?? "http://127.0.0.1:8188"));
   console.log(`Images in ${join(out, "run")}. Score them blind in scores.csv, then open key.json.`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main().catch((e) => {
+    console.error(e instanceof PilotError ? `Stopped: ${e.message}` : e);
+    process.exit(1);
+  });
+}
