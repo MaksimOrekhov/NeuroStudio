@@ -79,15 +79,26 @@ export const IMAGE_GOOD_TAGS = [
   ["good_composition", "Хорошая композиция"],
   ["beautiful_lighting", "Красивый свет"],
   ["original_idea", "Оригинальная идея"],
+  ["natural_pose", "Естественная поза"],
+  ["expressive_composition", "Выразительная композиция"],
+  ["good_setting", "Удачное окружение"],
 ] as const;
-export const IMAGE_BAD_TAGS = [
-  ["anatomy", "Анатомия"],
-  ["face", "Лицо"],
-  ["outfit", "Одежда"],
-  ["composition", "Композиция"],
-  ["lighting", "Освещение"],
-  ["concept_mismatch", "Не соответствует концепции"],
-  ["repetitive_look", "Повторяющийся образ"],
+export const IMAGE_BAD_GROUPS = [
+  ["Анатомия", [
+    ["bad_hands", "Кисти или пальцы"], ["bad_legs", "Ноги или ступни"], ["body_proportions", "Пропорции тела"],
+    ["awkward_pose", "Неестественная или сложная поза"], ["anatomy", "Анатомия"],
+  ]],
+  ["Композиция", [
+    ["bad_angle", "Неудачный ракурс"], ["bad_crop", "Плохая обрезка"], ["poor_subject_placement", "Неудачное расположение героини"],
+    ["repetitive_composition", "Однообразная композиция"], ["composition", "Композиция"],
+  ]],
+  ["Концепция", [
+    ["dull_setting", "Скучное окружение"], ["cluttered_scene", "Нелогичная или перегруженная сцена"],
+    ["weak_idea", "Слабая идея"], ["concept_mismatch", "Не соответствует концепции"],
+  ]],
+  ["Другое", [
+    ["face", "Лицо"], ["outfit", "Одежда"], ["lighting", "Освещение"], ["repetitive_look", "Повторяющийся образ"],
+  ]],
 ] as const;
 export const BAD_TAGS = [
   ["bad_anatomy", "Плохая анатомия"],
@@ -128,5 +139,5 @@ export const secondsRu = (s?: number) => (s === undefined ? "—" : s >= 60 ? `$
 export const ofImages = (n: number) => `${n} ${n % 10 === 1 && n % 100 !== 11 ? "изображения" : "изображений"}`;
 
 /** Russian tag names for the Preference Memory view (NS-020): per-image tags and whole-collection tags are separate vocabularies. */
-export const IMAGE_TAG_RU: Record<string, string> = Object.fromEntries([...IMAGE_GOOD_TAGS, ...IMAGE_BAD_TAGS]);
+export const IMAGE_TAG_RU: Record<string, string> = Object.fromEntries([...IMAGE_GOOD_TAGS, ...IMAGE_BAD_GROUPS.flatMap(([, tags]) => [...tags])]);
 export const COLLECTION_TAG_RU: Record<string, string> = Object.fromEntries([...GOOD_TAGS, ...BAD_TAGS]);

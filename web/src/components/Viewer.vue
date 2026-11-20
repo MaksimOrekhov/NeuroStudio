@@ -56,10 +56,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 </template>
 
 <style scoped>
-.back { position: fixed; inset: 0; z-index: 40; background: rgba(5, 6, 9, 0.93); display: flex; align-items: center; justify-content: center; gap: 24px; padding: 24px; }
-.box { display: flex; flex-direction: column; gap: 14px; max-height: 100%; }
+.back { position: fixed; inset: 0; height: 100dvh; z-index: 40; background: rgba(5, 6, 9, 0.93); display: flex; align-items: center; justify-content: center; gap: 24px; padding: 24px; }
+.box { display: flex; flex-direction: column; gap: 14px; max-height: 100%; overflow: auto; overscroll-behavior: contain; }
 .pic img { width: 100%; height: 100%; object-fit: contain; display: block; background: var(--panel-2); }
-.pic { aspect-ratio: 2 / 3; height: calc(100vh - 310px); margin: 0 auto; border-radius: 14px; overflow: hidden; border: 2px solid transparent; }
+.pic { flex: none; aspect-ratio: 2 / 3; height: calc(100vh - 310px); margin: 0 auto; border-radius: 14px; overflow: hidden; border: 2px solid transparent; }
 .pic.best { border-color: var(--ok); }
 .info { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; width: calc((100vh - 310px) * 2 / 3); min-width: 560px; margin: 0 auto; }
 .it { min-width: 0; flex: 1; }

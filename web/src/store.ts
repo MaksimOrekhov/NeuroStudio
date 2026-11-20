@@ -563,7 +563,7 @@ const fbQueue = new Map<string, Promise<void>>();
 
 /** Requests of one collection run one at a time, in click order. `decide` runs when the request's turn comes, so quick consecutive
  * clicks build on the server's latest answer; returning null sends nothing. The UI shows the server's answer, never a guess. */
-function queueImageFeedback(c: Collection, frame: number, variant: number, decide: (cur: ImageFeedback | undefined) => { verdict: "like" | "dislike" | null; tags: string[] } | null): Promise<void> {
+function queueImageFeedback(c: Collection, frame: number, variant: number, decide: (cur: ImageFeedback | undefined) => Parameters<typeof saveImageFeedback>[3] | null): Promise<void> {
   const next = (fbQueue.get(c.id) ?? Promise.resolve()).then(async () => {
     const body = decide(live(c).imageFeedback?.[`${frame}-${variant}`]);
     if (!body) return;
@@ -584,6 +584,8 @@ function queueImageFeedback(c: Collection, frame: number, variant: number, decid
     }
   });
   fbQueue.set(c.id, next);
+  const release = () => { if (fbQueue.get(c.id) === next) fbQueue.delete(c.id); };
+  void next.then(release, release);
   return next;
 }
 
@@ -592,6 +594,8 @@ export const toggleVerdict = (c: Collection, frame: number, variant: number, ver
   queueImageFeedback(c, frame, variant, (cur) => ({ verdict: cur?.verdict === verdict ? null : verdict, tags: [] }));
 export const toggleImageTag = (c: Collection, frame: number, variant: number, tag: string): Promise<void> =>
   queueImageFeedback(c, frame, variant, (cur) => (cur ? { verdict: cur.verdict, tags: cur.tags.includes(tag) ? cur.tags.filter((t) => t !== tag) : [...cur.tags, tag] } : null));
+export const saveImageNote = (c: Collection, frame: number, variant: number, note: string): Promise<void> =>
+  queueImageFeedback(c, frame, variant, (cur) => cur && (cur.note ?? "") !== note.trim() ? { note } : null);
 
 // ---------- Image Arena (NS-019): pairwise comparisons of variants of one frame; independent of Best and image feedback ----------
 
