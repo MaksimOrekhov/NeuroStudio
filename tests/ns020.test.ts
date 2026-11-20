@@ -577,6 +577,8 @@ test("NS-024: precise reasons become actionable only with support across indepen
   const weak = await buildPreferenceContext(dir);
   assert.deepEqual(weak.memory.negative.map(({ count, independent, collections, confidence }) => [count, independent, collections, confidence]),
     Array.from({ length: 3 }, () => [4, 2, 2, "low"]));
+  assert.deepEqual(weak.memory.features.find((f) => f.feature === "angle" && f.value === "front view"),
+    { feature: "angle", value: "front view", likes: 0, dislikes: 2, collections: 2, confidence: "low" });
   assert.match(weak.text, /Individual reports with low support/);
   assert.deepEqual(weak.memory.recommendations, []);
   assert.doesNotMatch(weak.text, /sitting|front view|Reconsider|Explore varied/);
@@ -610,6 +612,7 @@ test("NS-024: a single awkward pose is an observation and features come from the
   assert.deepEqual(memory.featureCoverage, { sidecars: 1, identified: 1 });
   assert.ok(memory.features.some((f) => f.value === "sitting" && f.confidence === "low"));
   assert.ok(!memory.features.some((f) => f.value === "standing"));
+  assert.deepEqual(memory.recommendations, []);
   assert.match(text, /awkward or difficult poses/);
   assert.doesNotMatch(text, /sitting|rear three-quarter|do not use/i);
 });
@@ -627,13 +630,38 @@ test("NS-024: successful compositions are learned and comparable opposite review
   for (let i = 0; i < 3; i++) await make(dir, { id: `disliked${i}`, images: [{ frame: 1, prompt }],
     imageFeedback: { "1-1": { verdict: "dislike", tags: ["awkward_pose", "bad_angle", "dull_setting", "weak_idea"] } } });
   const mixed = await buildPreferenceContext(dir);
+  assert.deepEqual(mixed.memory.features.find((f) => f.feature === "pose" && f.value === "reclining"),
+    { feature: "pose", value: "reclining", likes: 3, dislikes: 3, collections: 6, confidence: "mixed" });
   assert.ok(mixed.memory.features.every((f) => f.confidence === "mixed"));
   assert.ok([...mixed.memory.positive, ...mixed.memory.negative].every((t) => t.confidence === "mixed"));
   assert.deepEqual(mixed.memory.recommendations, []);
   assert.equal(mixed.text, "");
 });
 
-test("NS-024: star ratings affect whole-series guidance only, with no invented image signals", async () => {
+test("NS-024: a dominant negative association survives one positive frame, including repeated variants of it", async () => {
+  const dir = await tmp();
+  const prompt = "seated on a low wall, soft daylight";
+  for (let i = 0; i < 5; i++) await make(dir, { id: `complaint${i}`, images: [{ frame: 1, prompt }],
+    imageFeedback: { "1-1": { verdict: "dislike", tags: ["awkward_pose"] } } });
+  const saveLikes = (variants: number[]) => make(dir, {
+    id: "liked", images: variants.map((variant) => ({ frame: 1, variant, prompt, ...(variant > 1 ? { sourceVariant: 1 } : {}) })),
+    imageFeedback: Object.fromEntries(variants.map((variant) => [`1-${variant}`, { verdict: "like", tags: ["natural_pose"] }])),
+  });
+  const check = async () => {
+    const { memory, text } = await buildPreferenceContext(dir);
+    assert.deepEqual(memory.features.find((f) => f.feature === "pose" && f.value === "sitting"),
+      { feature: "pose", value: "sitting", likes: 1, dislikes: 5, collections: 6, confidence: "stable" });
+    assert.match(text, /Repeated associations in rated prompts \(correlation only\):\n- Explicit complaints co-occurred with sitting \(pose\): 5 dislikes and 1 like/);
+    assert.match(text, /Keep it available where it serves the scene/);
+    assert.doesNotMatch(text, /Liked examples included sitting|(?:avoid|ban|do not use) sitting/i);
+  };
+  await saveLikes([1]);
+  await check();
+  await saveLikes([1, 2, 3, 4, 5]);
+  await check();
+});
+
+test("NS-024: star ratings describe overall satisfaction without adding artistic recommendations", async () => {
   const dir = await tmp();
   const saveRatings = (ratings: number[]) => Promise.all(ratings.map((rating, i) => make(dir, {
     id: `rating${i}`, images: four(), feedback: { rating },
@@ -643,14 +671,33 @@ test("NS-024: star ratings affect whole-series guidance only, with no invented i
   assert.equal(low.memory.sample.ratedCollections, 4);
   assert.equal(low.memory.sample.ratedImages, 0);
   assert.deepEqual(low.memory.collection.ratings, { positive: 0, neutral: 1, negative: 3, confidence: "stable" });
-  assert.match(low.text, /3 collections rated 1–2\/5. Strengthen the coherence and progression/);
-  assert.doesNotMatch(low.text, /hand anatomy|unsuccessful viewing angles/);
+  assert.match(low.text, /Whole-collection star ratings:\n- 3 rated 1–2\/5, 1 rated 3\/5, 0 rated 4–5\/5. These scores report overall satisfaction/);
+  assert.deepEqual(low.memory.recommendations, []);
+  assert.doesNotMatch(low.text, /coherence|progression|hand anatomy|unsuccessful viewing angles|clear series concept/);
   await saveRatings([4, 5, 5, 3]);
-  assert.match((await buildPreferenceContext(dir)).text, /3 collections rated 4–5\/5. Build on these overall successes/);
+  const high = await buildPreferenceContext(dir);
+  assert.match(high.text, /0 rated 1–2\/5, 1 rated 3\/5, 3 rated 4–5\/5. These scores report overall satisfaction/);
+  assert.deepEqual(high.memory.recommendations, []);
+  assert.doesNotMatch(high.text, /Build on these overall successes|clear series concept|different visual role/);
   await saveRatings([1, 2, 2, 5, 5, 4]);
   const mixed = await buildPreferenceContext(dir);
   assert.equal(mixed.memory.collection.ratings.confidence, "mixed");
   assert.equal(mixed.text, "");
+});
+
+test("NS-024: specific guidance beside low star ratings comes from explicit reasons and reviews", async () => {
+  const dir = await tmp();
+  for (let i = 0; i < 3; i++) await make(dir, {
+    id: `review${i}`, images: [{ frame: 1 }],
+    feedback: { rating: 2, ...(i === 0 ? { note: "Keep the strong opening. The fingers on the cup look stiff." } : {}) },
+    imageFeedback: { "1-1": { verdict: "dislike", tags: ["bad_hands"] } },
+  });
+  const { memory, text } = await buildPreferenceContext(dir);
+  assert.match(text, /3 rated 1–2\/5.*overall satisfaction/);
+  assert.match(text, /Whole collection "review0": "Keep the strong opening. The fingers on the cup look stiff."/);
+  assert.deepEqual(memory.recommendations, [
+    "hand or finger anatomy problems (3 images in 3 collections). Check believable wrists, hand shapes and finger placement, especially around props. Prefer readable hand actions where they serve the scene.",
+  ]);
 });
 
 test("NS-024: missing or invalid graphs do not fall back to a saved plan or erase precise reasons", async () => {

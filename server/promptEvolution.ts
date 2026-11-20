@@ -411,9 +411,9 @@ function analyseFeatures(images: Img[]): FeatureStat[] {
     const dislikes = new Set(eligible.filter((im) => im.verdict === "dislike").map(frameKey)).size;
     if (!relevant.length && !(likes && dislikes)) return [];
     const collections = new Set(relevant.map((im) => im.collection.id)).size;
-    const support = [...groupTags(relevant, likes ? "like" : "dislike")].some(([tag, supporting]) =>
+    const support = [...groupTags(relevant, likes > dislikes ? "like" : "dislike")].some(([tag, supporting]) =>
       FEATURE_TAGS[feature].has(tag) && stableSupport(new Set(supporting.map(frameKey)).size, new Set(supporting.map((im) => im.collection.id)).size));
-    const confidence: Confidence = likes && dislikes ? "mixed" : support ? "stable" : "low";
+    const confidence: Confidence = comparable(likes, dislikes) ? "mixed" : support ? "stable" : "low";
     return [{ feature, value, likes, dislikes, collections, confidence }];
   }).sort((a, b) => b.likes + b.dislikes - a.likes - a.dislikes || a.feature.localeCompare(b.feature) || a.value.localeCompare(b.value));
 }
@@ -641,18 +641,15 @@ function formatPreference(m: PreferenceMemory): { text: string; recommendations:
   const lowPositive = m.positive.filter((t) => t.confidence === "low" && ["natural_pose", "expressive_composition", "good_setting"].includes(t.tag))
     .slice(0, 2).map((t) => line(t, LIKE_TAGS));
   const rated = m.collection.ratings;
-  const stars: string[] = [];
-  if (rated.confidence === "stable") {
-    stars.push(rated.negative > rated.positive
-      ? `- ${rated.negative} collections rated 1–2/5. Strengthen the coherence and progression of each series around its concept. The scores specify overall satisfaction only.`
-      : `- ${rated.positive} collections rated 4–5/5. Build on these overall successes by keeping a clear series concept and giving each frame a different visual role. The scores specify overall satisfaction only.`);
-  }
+  const stars = rated.confidence === "stable"
+    ? [`- ${rated.negative} rated 1–2/5, ${rated.neutral} rated 3/5, ${rated.positive} rated 4–5/5. These scores report overall satisfaction with the series. Use explicit reasons and reviews for specific artistic guidance.`]
+    : [];
   const notes = m.reviews.map((r) => r.scope === "collection"
     ? `- Whole collection ${quoteReview(r.collectionId)}: ${quoteReview(r.note)}`
     : `- Image ${quoteReview(r.collectionId)}, frame ${r.frame}, variant ${r.variant} (${r.verdict}): ${quoteReview(r.note)}`);
   const matches = m.features.filter((f) => f.confidence === "stable").slice(0, 3).map((f) =>
-    f.likes ? `- Liked examples included ${f.value} (${f.feature}). Consider it where it suits a new concept, alongside other approaches.`
-      : `- Explicit complaints co-occurred with ${f.value} (${f.feature}). Check readability when using it. Keep it available where it serves the scene.`);
+    f.likes > f.dislikes ? `- Liked examples included ${f.value} (${f.feature}). Consider it where it suits a new concept, alongside other approaches.`
+      : `- Explicit complaints co-occurred with ${f.value} (${f.feature}): ${plural(f.dislikes, "dislike")} and ${plural(f.likes, "like")}, counted by independent frame. Check readability when using it. Keep it available where it serves the scene.`);
   const prefLines: string[] = [];
   if (m.preferred.best.confidence === "stable") prefLines.push(`- selected as Best: ${plural(m.preferred.best.images, "image")} in ${plural(m.preferred.best.collections, "collection")}`);
   if (m.preferred.arena.confidence === "stable") prefLines.push(`- preferred over other variants of the same frame in pairwise comparisons: ${plural(m.preferred.arena.images, "image")} in ${plural(m.preferred.arena.collections, "collection")}`);
@@ -692,7 +689,7 @@ function formatPreference(m: PreferenceMemory): { text: string; recommendations:
     { title: "Observed negative signals:", lines: neg, advice: true },
     { title: "Individual reports with low support (observations only):", lines: low },
     { title: "Individual positive observations with low support:", lines: lowPositive },
-    { title: "Whole-collection star ratings:", lines: stars, advice: true },
+    { title: "Whole-collection star ratings:", lines: stars },
     { title: "Repeated associations in rated prompts (correlation only):", lines: matches, advice: true },
     { title: "Preferred images (no reasons were recorded for these; do not infer specific causes such as pose, outfit or lighting):", lines: prefLines },
     { title: "Whole-collection impressions (about complete series, not single images) — liked:", lines: colPos, advice: true },
