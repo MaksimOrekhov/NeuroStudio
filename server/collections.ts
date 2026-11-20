@@ -3,6 +3,7 @@ import { join, resolve, sep } from "node:path";
 import type { Generation, Manifest } from "../src/collection.ts";
 import type { PromptPlan } from "../src/promptPlan.ts";
 import { io, writeAtomic } from "../src/persistence.ts";
+import { IMAGE_NOTE_MAX, IMAGE_TAGS } from "../src/imageFeedback.ts";
 
 export interface FrameView {
   frame: number;
@@ -69,16 +70,13 @@ export const FEEDBACK_TAGS = [
 ] as const;
 export const FEEDBACK_NOTE_MAX = 500;
 
-export const IMAGE_TAGS = {
-  like: ["beautiful_look", "great_outfit", "good_composition", "beautiful_lighting", "original_idea"],
-  dislike: ["anatomy", "face", "outfit", "composition", "lighting", "concept_mismatch", "repetitive_look"],
-} as const;
 export type Verdict = keyof typeof IMAGE_TAGS;
 
-/** NS-018. Only the verdict and reasons: prompt, graph, seed and PNG are found through (frame, variant) in the existing files. */
+/** The review of one frame and variant. The prompt, graph, seed and PNG stay in the existing files. */
 export interface ImageFeedback {
   verdict: Verdict;
   tags: string[];
+  note?: string;
   updatedAt: string;
 }
 
@@ -159,33 +157,38 @@ const readSelections = (dir: string, id: string) => loadSelections(dir, id).catc
  * Reads image-feedback.json strictly. A missing file (ENOENT) is "no feedback". Anything else that stops the file from being
  * understood (read error, invalid JSON, wrong structure) is reported as `unreadable`, so that nothing ever overwrites it.
  */
-async function loadImageFeedback(dir: string, id: string): Promise<{ images: Record<string, ImageFeedback>; unreadable: string | null }> {
+async function loadImageFeedback(dir: string, id: string): Promise<
+  { images: Record<string, ImageFeedback>; raw: Record<string, unknown> & { images: Record<string, unknown> }; unreadable: null }
+  | { images: Record<string, ImageFeedback>; unreadable: string }
+> {
   let text: string;
   try {
     text = await readFile(join(dir, id, "image-feedback.json"), "utf8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { images: {}, unreadable: null };
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { images: {}, raw: { version: 1, images: {} }, unreadable: null };
     return { images: {}, unreadable: `cannot read image-feedback.json: ${(e as Error).message}` };
   }
-  let raw: { images?: unknown };
+  let raw: Record<string, unknown> & { images: Record<string, unknown> };
   try {
     raw = JSON.parse(text);
   } catch (e) {
     return { images: {}, unreadable: `image-feedback.json is not valid JSON: ${(e as Error).message}` };
   }
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw) || typeof raw.images !== "object" || raw.images === null || Array.isArray(raw.images)) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw) || (raw.version !== undefined && raw.version !== 1)
+    || typeof raw.images !== "object" || raw.images === null || Array.isArray(raw.images)) {
     return { images: {}, unreadable: "image-feedback.json has an unexpected structure" };
   }
   const out: Record<string, ImageFeedback> = {};
   for (const [k, v] of Object.entries(raw.images as Record<string, Partial<ImageFeedback>>)) {
-    if (!/^[1-4]-\d{1,2}$/.test(k) || !v || (v.verdict !== "like" && v.verdict !== "dislike")) continue; // single unknown entries are ignored
+    if (!/^[1-4]-[1-9]\d*$/.test(k) || !v || (v.verdict !== "like" && v.verdict !== "dislike")) continue; // single unknown entries are ignored
+    if (v.note !== undefined && typeof v.note !== "string") return { images: {}, unreadable: "image-feedback.json has an invalid note" };
     const allowed = IMAGE_TAGS[v.verdict] as readonly string[];
-    out[k] = { verdict: v.verdict, tags: Array.isArray(v.tags) ? v.tags.filter((t): t is string => allowed.includes(t as string)) : [], updatedAt: typeof v.updatedAt === "string" ? v.updatedAt : "" };
+    out[k] = { verdict: v.verdict, tags: Array.isArray(v.tags) ? v.tags.filter((t): t is string => allowed.includes(t as string)) : [], ...(v.note ? { note: v.note } : {}), updatedAt: typeof v.updatedAt === "string" ? v.updatedAt : "" };
   }
-  return { images: out, unreadable: null };
+  return { images: out, raw, unreadable: null };
 }
 
-async function loadFeedback(dir: string, id: string): Promise<Feedback | null> {
+export async function loadFeedback(dir: string, id: string): Promise<Feedback | null> {
   let text: string;
   try {
     text = await readFile(join(dir, id, "feedback.json"), "utf8");
@@ -402,34 +405,43 @@ const imageFeedbackLocks = new Map<string, Promise<unknown>>();
  * Read-modify-write of image-feedback.json is serialised per collection and written atomically; other files are never touched.
  */
 export function setImageFeedback(dir: string, id: string, frame: unknown, variant: unknown, input: unknown): Promise<ImageFeedback | null> {
-  const key = `${dir}\0${id}`;
-  const run = (imageFeedbackLocks.get(key) ?? Promise.resolve()).catch(() => undefined).then(() => apply(dir, id, frame, variant, input));
-  imageFeedbackLocks.set(key, run);
-  return run;
+  return queued(imageFeedbackLocks, dir, id, () => applyImageFeedback(dir, id, frame, variant, input));
 }
 
-async function apply(dir: string, id: string, frame: unknown, variant: unknown, input: unknown): Promise<ImageFeedback | null> {
+async function applyImageFeedback(dir: string, id: string, frame: unknown, variant: unknown, input: unknown): Promise<ImageFeedback | null> {
   const c = await readCollection(dir, id);
   if (!c) throw new ImageFeedbackError("collection not found");
   if (typeof frame !== "number" || !Number.isInteger(frame) || frame < 1 || frame > c.frameCount) throw new ImageFeedbackError(`frame must be 1-${c.frameCount}`);
   if (typeof variant !== "number" || !Number.isInteger(variant) || variant < 1) throw new ImageFeedbackError("variant must be a positive integer");
   if (!c.frames.some((f) => f.frame === frame && f.variant === variant && f.image)) throw new ImageFeedbackError("that image does not exist yet");
   if (typeof input !== "object" || input === null || Array.isArray(input)) throw new ImageFeedbackError("body must be an object");
-  const { verdict = null, tags = [] } = input as Record<string, unknown>;
-  if (verdict !== null && verdict !== "like" && verdict !== "dislike") throw new ImageFeedbackError('verdict must be "like", "dislike" or null');
+  const { verdict, tags = [], note } = input as Record<string, unknown>;
+  const noteOnly = verdict === undefined && note !== undefined;
+  if (verdict !== undefined && verdict !== null && verdict !== "like" && verdict !== "dislike") throw new ImageFeedbackError('verdict must be "like", "dislike" or null');
   if (!Array.isArray(tags)) throw new ImageFeedbackError("tags must be an array");
+  if (note !== undefined && (typeof note !== "string" || note.length > IMAGE_NOTE_MAX)) throw new ImageFeedbackError(`note must be a string of at most ${IMAGE_NOTE_MAX} characters`);
+  if (noteOnly && "tags" in input) throw new ImageFeedbackError("a note-only update cannot change tags");
   const cur = await loadImageFeedback(dir, id); // strict: never write over a file that could not be read
-  if (cur.unreadable) throw new ImageFeedbackFileError(cur.unreadable);
-  const all = { ...cur.images };
+  if (cur.unreadable !== null) throw new ImageFeedbackFileError(cur.unreadable);
+  const all = { ...cur.raw.images };
   const k = `${frame}-${variant}`;
+  const previous = cur.images[k];
+  if (noteOnly && !previous) throw new ImageFeedbackError("rate the image before adding a note");
+  const nextVerdict = noteOnly ? previous.verdict : verdict;
   let entry: ImageFeedback | null = null;
-  if (verdict === null) {
-    delete all[k]; // removing the rating also removes its reasons
+  if (!nextVerdict) {
+    delete all[k];
   } else {
-    const allowed = IMAGE_TAGS[verdict] as readonly string[];
-    if (tags.some((t) => typeof t !== "string" || !allowed.includes(t))) throw new ImageFeedbackError(`unknown tag for "${verdict}"`);
-    entry = { verdict, tags: (IMAGE_TAGS[verdict] as readonly string[]).filter((t) => tags.includes(t)), updatedAt: new Date().toISOString() };
-    all[k] = entry;
+    const allowed = IMAGE_TAGS[nextVerdict] as readonly string[];
+    if (tags.some((t) => typeof t !== "string" || !allowed.includes(t))) throw new ImageFeedbackError(`unknown tag for "${nextVerdict}"`);
+    const nextTags = noteOnly ? previous.tags : allowed.filter((t) => tags.includes(t));
+    const nextNote = typeof note === "string" ? note.trim() : previous?.note;
+    if (previous?.verdict === nextVerdict && (previous.note ?? "") === (nextNote ?? "") && JSON.stringify(previous.tags) === JSON.stringify(nextTags)) return previous;
+    entry = { verdict: nextVerdict, tags: nextTags, ...(nextNote ? { note: nextNote } : {}), updatedAt: new Date().toISOString() };
+    if (noteOnly) {
+      const { note: _previousNote, ...rawEntry } = all[k] as Record<string, unknown>;
+      all[k] = { ...rawEntry, ...(nextNote ? { note: nextNote } : {}), updatedAt: entry.updatedAt };
+    } else all[k] = entry;
   }
   const file = join(dir, id, "image-feedback.json");
   if (!Object.keys(all).length) {
@@ -438,6 +450,6 @@ async function apply(dir: string, id: string, frame: unknown, variant: unknown, 
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; // anything else: the file is still there, do not report success
     }
-  } else await writeAtomic(file, JSON.stringify({ version: 1, images: all }, null, 2));
+  } else await writeAtomic(file, JSON.stringify({ version: 1, ...cur.raw, images: all }, null, 2));
   return entry;
 }

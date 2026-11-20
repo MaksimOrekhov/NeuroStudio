@@ -55,6 +55,53 @@ test("set, change and remove the feedback of one image; only verdict, tags and t
   assert.ok(!(await readdir(join(t.dir, "a"))).includes("image-feedback.json")); // empty feedback leaves no file
 });
 
+test("NS-024: note-only and rating updates preserve each other, including repeated and parallel writes", async () => {
+  const t = await setup();
+  await t.make("notes", [{ frame: 1 }, { frame: 1, variant: 2 }, { frame: 2 }]);
+  assert.equal((await t.put("notes", 1, 1, { note: "Unrated image" })).statusCode, 400);
+  assert.equal((await t.put("notes", 1, 1, { verdict: "dislike", tags: ["anatomy", "composition"] })).statusCode, 200);
+  const results = await Promise.all([
+    t.put("notes", 1, 1, { note: "  The wrist bends unnaturally.  " }),
+    t.put("notes", 1, 1, { verdict: "dislike", tags: ["anatomy", "composition", "bad_hands", "bad_crop"] }),
+    t.put("notes", 1, 2, { verdict: "like", tags: ["natural_pose", "good_setting"], note: "The pose works here." }),
+    t.put("notes", 2, 1, { verdict: "dislike", tags: ["bad_legs", "body_proportions", "awkward_pose", "bad_angle", "poor_subject_placement",
+      "repetitive_composition", "dull_setting", "cluttered_scene", "weak_idea"] }),
+  ]);
+  assert.ok(results.every((r) => r.statusCode === 200));
+  const notes = (await t.get("notes")).imageFeedback;
+  assert.equal(notes["1-1"].note, "The wrist bends unnaturally.");
+  assert.deepEqual(notes["1-1"].tags, ["anatomy", "composition", "bad_hands", "bad_crop"]);
+  assert.equal(notes["1-2"].note, "The pose works here.");
+  assert.equal(notes["2-1"].tags.length, 9);
+  const before = await readFile(fbFile(t, "notes"), "utf8");
+  assert.equal((await t.put("notes", 1, 1, { note: notes["1-1"].note })).statusCode, 200);
+  assert.equal(await readFile(fbFile(t, "notes"), "utf8"), before);
+  assert.equal((await t.put("notes", 1, 1, { note: "x".repeat(241) })).statusCode, 400);
+  assert.equal((await t.put("notes", 1, 1, { note: 5 })).statusCode, 400);
+  assert.equal((await t.put("notes", 1, 1, { note: "  " })).json().feedback.note, undefined);
+  assert.equal((await t.get("notes")).imageFeedback["1-2"].note, "The pose works here.");
+  await t.app.close();
+});
+
+test("NS-024: invalid notes protect the source while ignored legacy entries survive updates to other variants", async () => {
+  const t = await setup();
+  await t.make("legacy-notes", [{ frame: 1 }, { frame: 2 }]);
+  const file = fbFile(t, "legacy-notes");
+  const damaged = '{"version":1,"images":{"1-1":{"verdict":"like","note":42}}}';
+  await writeFile(file, damaged);
+  assert.equal((await t.put("legacy-notes", 2, 1, { verdict: "like" })).statusCode, 409);
+  assert.equal(await readFile(file, "utf8"), damaged);
+  const old = { "1-1": { verdict: "like", tags: ["future_reason", "original_idea"], extra: true }, "9-9": { discardedByView: true } };
+  await writeFile(file, JSON.stringify({ version: 1, images: old }));
+  assert.equal((await t.put("legacy-notes", 1, 1, { note: "A strong opening scene" })).statusCode, 200);
+  assert.equal((await t.put("legacy-notes", 2, 1, { verdict: "like", tags: ["expressive_composition"] })).statusCode, 200);
+  const after = JSON.parse(await readFile(file, "utf8")).images;
+  assert.deepEqual(after["9-9"], old["9-9"]);
+  assert.deepEqual(after["1-1"].tags, old["1-1"].tags);
+  assert.equal(after["1-1"].extra, true);
+  await t.app.close();
+});
+
 test("feedback is bound to the right frame and variant (incl. regenerated ones); bad targets are refused", async () => {
   const t = await setup();
   await t.make("b", [{ frame: 1, variant: 1 }, { frame: 1, variant: 2, sourceVariant: 1 }, { frame: 1, variant: 3, status: "failed" }, { frame: 2 }]);

@@ -33,6 +33,7 @@ export interface Feedback {
 export interface ImageFeedback {
   verdict: "like" | "dislike";
   tags: string[];
+  note?: string;
   updatedAt: string;
 }
 
@@ -208,7 +209,8 @@ export interface CodexModels {
 }
 export const getCodexModels = () => json<CodexModels>("/api/codex/models");
 
-export const saveImageFeedback = (id: string, frame: number, variant: number, fb: { verdict: "like" | "dislike" | null; tags: string[] }) =>
+export type ImageFeedbackInput = { verdict: "like" | "dislike" | null; tags: string[] } | { note: string };
+export const saveImageFeedback = (id: string, frame: number, variant: number, fb: ImageFeedbackInput) =>
   json<{ feedback: ImageFeedback | null }>(`/api/collections/${encodeURIComponent(id)}/frames/${frame}/variants/${variant}/feedback`, put(fb));
 
 export const getComparisons = (id: string) => json<{ comparisons: Record<string, Comparison> }>(`/api/collections/${encodeURIComponent(id)}/comparisons`);
@@ -219,6 +221,7 @@ export const saveComparison = (id: string, frame: number, body: { variantA: numb
 export interface TagStat {
   tag: string;
   count: number;
+  independent: number;
   collections: number;
   confidence: "stable" | "low" | "mixed";
 }
@@ -229,7 +232,11 @@ export interface EvolutionPreview {
     evidence: { likes: number; dislikes: number; best: number; arenaPreferred: number; arenaLessPreferred: number };
     positive: TagStat[];
     negative: TagStat[];
-    collection: { positive: TagStat[]; negative: TagStat[] };
+    collection: { positive: TagStat[]; negative: TagStat[]; ratings: { positive: number; neutral: number; negative: number; confidence: TagStat["confidence"] } };
+    reviews: ({ collectionId: string; note: string } & ({ scope: "collection" } | { scope: "image"; frame: number; variant: number; verdict: ImageFeedback["verdict"] }))[];
+    features: { feature: string; value: string; likes: number; dislikes: number; collections: number; confidence: TagStat["confidence"] }[];
+    featureCoverage: { sidecars: number; identified: number };
+    recommendations: string[];
     models: Record<string, { ratedImages: number; likes: number; dislikes: number; best: number; positive: TagStat[]; negative: TagStat[] }>;
     warnings: { collectionId: string; source: string; message: string }[];
   };
