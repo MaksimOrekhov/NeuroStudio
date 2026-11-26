@@ -1,0 +1,101 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "vetehineCrimsonOathILL_v02ANM.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "animij_s1_txt.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "2",
+        0
+      ],
+      "text": "realistic, masterpiece, best quality, ultra detailed, absurdres, sharp focus, intricate details, cinematic dramatic lighting, soft rim light,\n\nsolo female, adult woman, 28 years old, original character, mature face, adult body, huge breast,\n\noval face, warm olive skin, amber-brown eyes, defined dark brows, long glossy black hair in loose waves falling over one shoulder, confident subtle smile, glossy semi-realistic illustration, natural anatomy,\n\nstanding in a relaxed contrapposto, weight on her near leg, far leg stepping slightly outward, one hand resting on her hip with the elbow out, the other arm hanging loosely at her side with relaxed fingers, head level, looking at the viewer,\n\nemerald silk slip evening dress with thin straps and a side slit, delicate gold necklace, strappy gold high heels,\n\nrooftop terrace of a luxury hotel at blue hour, city lights bokeh far below, glass balustrade, potted olive trees,\n\nfront three-quarter view, full body, eye-level camera, warm golden lantern light on her skin, cool blue twilight sky behind her"
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "2",
+        0
+      ],
+      "text": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia,bad hands,bad fingers,glowing eyes,censored, worst quality, low quality, displeasing, ugly, grainy, bad anatomy, jpeg artifacts, poorly drawn, signature, bad hands, mutated hands, missing fingers, fused fingers, too many fingers, fat belly,crossed hips,crossed legs, one leg forward"
+    }
+  },
+  "6": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 896,
+      "height": 1152,
+      "batch_size": 1
+    }
+  },
+  "10": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "seed": 250001,
+      "steps": 35,
+      "cfg": 4,
+      "sampler_name": "er_sde",
+      "scheduler": "simple",
+      "denoise": 1,
+      "positive": [
+        "4",
+        0
+      ],
+      "negative": [
+        "5",
+        0
+      ],
+      "latent_image": [
+        "6",
+        0
+      ]
+    }
+  },
+  "11": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "10",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "12": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "11",
+        0
+      ],
+      "filename_prefix": "NS-025/pair4-baseline"
+    }
+  }
+}
