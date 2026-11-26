@@ -1,4 +1,5 @@
-import { mkdir } from "node:fs/promises";
+import { randomInt } from "node:crypto";
+import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { CodexSelection } from "../src/codexModels.ts";
 import type { ComfyClient, Graph } from "../src/comfy.ts";
@@ -12,6 +13,10 @@ import { buildPreferenceContext } from "./promptEvolution.ts";
 import { loadVisualHistory } from "../src/visualHistory.ts";
 import { writeAtomic } from "../src/persistence.ts";
 import { loadSource, parseFrame, parsePositive, parseVariant, frameCountOf, reserve, runRegeneration } from "../src/regenerate.ts";
+import { anatomyCaution, countPoseUses, listedIds, loadPoseCatalog, selectPoses, type PoseMode, type PoseSelection } from "../src/poses.ts";
+
+/** NS-026: newest collections whose saved poseIds lower a pose's priority in the next sample. */
+export const RECENT_POSE_COLLECTIONS = 12;
 
 export type RunStatus = "idle" | "planning" | "generating" | "completed" | "failed";
 
@@ -39,6 +44,8 @@ export interface RunState {
   regeneration?: { collectionId: string; frame: number; variant: number; sourceVariant: number };
   /** NS-020: what Prompt Evolution did for this run (set once the memory has been built). */
   evolution?: { enabled: boolean; applied: boolean; reason?: string; error?: string };
+  /** NS-026: pose selection mode of this run (absent = free, as before). */
+  poseSelection?: PoseMode;
   /** Ids of collections already saved by this batch. */
   finished: string[];
   /** Original technical message. */
@@ -66,6 +73,10 @@ export interface RunnerDeps {
   baseGraph: Graph;
   /** For tests: replaces the local Preference Memory builder. */
   preferenceContext?: typeof buildPreferenceContext;
+  /** For tests: fixes the pose sample seed (default: random per run, always saved in batch-plan.json). */
+  poseSeed?: () => number;
+  /** For tests: another pose catalog file. */
+  poseCatalogPath?: string;
   collectionsDir: string;
   batchesDir: string;
   log?: (s: string) => void;
@@ -84,6 +95,8 @@ export interface RunSettings {
   codex: CodexSelection;
   /** NS-020: add Preference Memory to the (single) Codex request. */
   promptEvolution: boolean;
+  /** NS-026: "auto" = Codex picks per frame from a catalog sample in the same request; "free" = exactly the pre-NS-026 request. */
+  poseSelection: PoseMode;
 }
 
 const deepFreeze = <T>(o: T): T => {
@@ -111,12 +124,13 @@ export class AutopilotRunner {
     codex: CodexSelection = {},
     images?: ImageModelAssignment,
     promptEvolution = false,
+    poseSelection: PoseMode = "free",
   ): Promise<RunState> {
     if (this.busy) throw new RunError("ALREADY_RUNNING", "An Autopilot run is already in progress", 409);
     this.busy = true; // synchronous lock: a concurrent second call cannot pass this line
     const imageModels: ImageModelAssignment = images ?? { mode: "auto", models: autoMix(MAX_FRAMES) as ImageModelId[] };
     const settings: RunSettings = deepFreeze(
-      structuredClone({ theme, collections: count, frames: imageModels.models.length, variations, imageModels, composition, codex, promptEvolution }),
+      structuredClone({ theme, collections: count, frames: imageModels.models.length, variations, imageModels, composition, codex, promptEvolution, poseSelection }),
     );
     try {
       await this.deps.client.systemStats();
@@ -133,6 +147,7 @@ export class AutopilotRunner {
       frames: settings.frames,
       variations,
       imageModels: settings.imageModels,
+      ...(poseSelection === "auto" ? { poseSelection } : {}),
       startedAt: new Date().toISOString(),
     };
     void this.execute(settings)
@@ -197,7 +212,7 @@ export class AutopilotRunner {
   }
 
   private async execute(cfg: RunSettings) {
-    const { theme, collections: count, frames, variations, imageModels, composition, codex: sel, promptEvolution } = cfg;
+    const { theme, collections: count, frames, variations, imageModels, composition, codex: sel, promptEvolution, poseSelection } = cfg;
     const { collectionsDir, batchesDir, log } = this.deps;
     const resolved = composition ? resolveComposition(composition, frames) : null;
     const generation: Generation = { theme: theme ?? null, imageModels, composition: resolved };
@@ -224,6 +239,7 @@ export class AutopilotRunner {
       error: undefined as string | undefined,
       errorCode: undefined as ErrorCode | undefined,
       plans: [] as unknown[],
+      poseSelection: undefined as PoseSelection | undefined,
     };
     const saveBatch = () => writeAtomic(join(batchDir, "batch-plan.json"), JSON.stringify(batch, null, 2));
     try {
@@ -258,7 +274,29 @@ export class AutopilotRunner {
       const recent = await listCollections(collectionsDir, 20);
       const avoid = recent.map((c) => c.title);
       const history = await loadVisualHistory(collectionsDir, recent); // NS-023: "" when nothing can be extracted reliably
-      const r = await this.deps.plan({ theme, avoid, count, composition, models: imageModels.models, model: sel.model, reasoningEffort: sel.reasoningEffort, ...(preferences ? { preferences } : {}), ...(history ? { history } : {}) }); // all plans are validated before any GPU work
+
+      // NS-026: the pose sample is chosen locally and goes into the SAME single Codex request. Free mode skips all of this.
+      let poses: { catalogVersion: number; sample: ReturnType<typeof selectPoses> } | undefined;
+      if (poseSelection === "auto") {
+        const catalog = loadPoseCatalog(this.deps.poseCatalogPath);
+        const plans: unknown[] = [];
+        for (const c of recent.slice(0, RECENT_POSE_COLLECTIONS)) {
+          try {
+            plans.push(JSON.parse(await readFile(join(collectionsDir, c.id, "prompt-plan.json"), "utf8")));
+          } catch {
+            /* no readable plan: it counts for nothing */
+          }
+        }
+        const seed = this.deps.poseSeed?.() ?? randomInt(0, 2 ** 31);
+        const used = countPoseUses(plans);
+        const cautious = anatomyCaution(ctx?.memory);
+        const sample = selectPoses({ catalog, resolved: resolveComposition(composition, frames), frames, collections: count, seed, recent: used, cautious });
+        poses = { catalogVersion: catalog.version, sample };
+        batch.poseSelection = { mode: "auto", catalogVersion: catalog.version, seed, sample: listedIds(sample, catalog.version), recent: used, cautious };
+        generation.pose = { mode: "auto", catalogVersion: catalog.version };
+        await saveBatch(); // the sample is on disk before Codex sees it
+      }
+      const r = await this.deps.plan({ theme, avoid, count, composition, models: imageModels.models, model: sel.model, reasoningEffort: sel.reasoningEffort, ...(preferences ? { preferences } : {}), ...(history ? { history } : {}), ...(poses ? { poses } : {}) }); // all plans are validated before any GPU work
       codexMeta.seconds = r.ms / 1000;
       codexMeta.tokens = r.tokens;
       batch.plans = r.plans;
@@ -273,7 +311,7 @@ export class AutopilotRunner {
         await saveBatch();
         await runCollection({
           plan,
-          jobs: buildJobs(plan, this.deps.baseGraph, slug, variations),
+          jobs: buildJobs(plan, this.deps.baseGraph, slug, variations, poses?.catalogVersion),
           dir: join(collectionsDir, id),
           client: this.deps.client,
           codex: { ...codexMeta, seconds: r.ms / 1000 },

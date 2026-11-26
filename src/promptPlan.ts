@@ -10,6 +10,11 @@ export interface Frame {
   positive: string;
   /** Present only in plans made before Creative Director v2; absent means "use the workflow's own negative". */
   negative?: string;
+  /**
+   * NS-026: catalog pose the frame is built on (auto pose mode), or FREE_POSE when no listed pose fitted. Absent in free mode and in
+   * every older plan. Metadata only: never part of the prompt text.
+   */
+  poseId?: string;
 }
 export interface PromptPlan {
   /** title/description are English (kept for compatibility); the *Ru fields are for the UI and exist in v3 plans only. */
@@ -18,6 +23,11 @@ export interface PromptPlan {
 }
 
 export const BANNED = ["brushing", "camera", "framing", "twisted", "parted lips", "wide hips"];
+
+/** NS-026: poseId value meaning "no catalog pose fits this frame; Codex invented one". */
+export const FREE_POSE = "free";
+/** Anything that looks like a catalog id; it must never leak into prompt text. */
+const POSE_ID_TEXT = /\bND-P\d{2}\b/i;
 
 export class PlanError extends Error {}
 
@@ -33,6 +43,11 @@ export interface ValidateOptions {
    * Without it a plan is validated the old way: exactly 4 frames, 2 + 2 models, Russian fields optional.
    */
   models?: readonly string[];
+  /**
+   * NS-026 auto pose mode: the catalog ids actually offered to Codex. Every frame must then carry one of them or FREE_POSE.
+   * Without it (free mode) a frame may have no poseId or FREE_POSE only.
+   */
+  poseIds?: readonly string[];
 }
 
 // Adult ages stated as "29 years old" or "25-35 years old"; every stated age must be >= 21.
@@ -76,6 +91,10 @@ export function validatePlan(x: unknown, opts: ValidateOptions = {}): PromptPlan
       if (f.negative !== undefined && typeof f.negative !== "string") errs.push(`frames[${i}].negative must be a string`);
       const text = `${f.positive} ${f.negative ?? ""}`.toLowerCase();
       for (const w of BANNED) if (text.includes(w)) errs.push(`frames[${i}] contains banned phrase "${w}"`);
+      if (opts.poseIds) {
+        if (typeof f.poseId !== "string" || (f.poseId !== FREE_POSE && !opts.poseIds.includes(f.poseId))) errs.push(`frames[${i}].poseId must be one of the offered poses or "${FREE_POSE}", got ${JSON.stringify(f.poseId)}`);
+      } else if (f.poseId !== undefined && f.poseId !== FREE_POSE) errs.push(`frames[${i}].poseId ${JSON.stringify(f.poseId)} was not requested`);
+      if (POSE_ID_TEXT.test(`${f.positive} ${f.summary} ${f.summaryRu ?? ""}`)) errs.push(`frames[${i}] must not mention a pose id in its prompt or summary`);
       if (!opts.legacy && str(f.positive)) {
         const pos = f.positive;
         if (!/adult woman/i.test(pos)) errs.push(`frames[${i}] must say "adult woman"`);

@@ -6,6 +6,7 @@ import type { Resolved } from "./composition.ts";
 import { ComfyUnavailableError, MODELS, applyParams, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
 import type { PromptPlan } from "./promptPlan.ts";
 import { writeAtomic } from "./persistence.ts";
+import { framePose, type FramePose } from "./poses.ts";
 
 const SEED_MAX = 2 ** 48 - 1;
 
@@ -19,6 +20,8 @@ export interface Job {
   seed: number;
   summary: string;
   graph: Graph;
+  /** NS-026: catalog pose of the plan frame (auto pose mode); every seed variant of the frame inherits it. */
+  pose?: FramePose;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -28,7 +31,7 @@ const pad = (n: number) => String(n).padStart(2, "0");
  * the same prompts and settings; only the seed differs, and all seeds are unique. Execution order groups
  * frames by model (fewer checkpoint reloads); frame numbers stay those of the plan.
  */
-export function buildJobs(plan: PromptPlan, base: Graph, slug: string, variations = 1): Job[] {
+export function buildJobs(plan: PromptPlan, base: Graph, slug: string, variations = 1, poseCatalogVersion?: number): Job[] {
   const used = new Set<number>();
   const jobs: Job[] = [];
   for (const f of plan.frames) {
@@ -44,7 +47,8 @@ export function buildJobs(plan: PromptPlan, base: Graph, slug: string, variation
         unet: MODELS[f.model],
         filenamePrefix: `NeuroStudio/${slug}/${file}`,
       });
-      jobs.push({ frame: f.frame, variant, file, model: f.model, seed, summary: f.summary, graph });
+      const pose = framePose(f.poseId, poseCatalogVersion);
+      jobs.push({ frame: f.frame, variant, file, model: f.model, seed, summary: f.summary, graph, ...(pose ? { pose } : {}) });
     }
   }
   return jobs.sort((a, b) => (a.model === b.model ? a.frame - b.frame || a.variant - b.variant : modelIndex(a.model) - modelIndex(b.model)));
@@ -70,6 +74,8 @@ export interface FrameRecord {
   sourceVariant?: number;
   /** NS-017: true when the positive prompt was edited before regenerating (absent otherwise). */
   promptEdited?: boolean;
+  /** NS-026: the pose this image was planned with (auto pose mode only). verified=false after a prompt edit. */
+  pose?: FramePose;
 }
 
 export interface Generation {
@@ -77,6 +83,8 @@ export interface Generation {
   imageModels: ImageModelAssignment;
   /** Final per-frame composition requirements after inheritance (Auto fields absent); null = none given. */
   composition: Resolved | null;
+  /** NS-026: present only when the run used the pose catalog. */
+  pose?: { mode: "auto"; catalogVersion: number };
 }
 
 export interface Manifest {
@@ -129,7 +137,7 @@ export async function runCollection(opts: {
     variations: Math.max(1, ...jobs.map((j) => j.variant)),
     frameCount: plan.frames.length,
     generation: opts.generation,
-    frames: jobs.map((j) => ({ frame: j.frame, variant: j.variant, model: j.model, seed: j.seed, status: "pending" })),
+    frames: jobs.map((j) => ({ frame: j.frame, variant: j.variant, model: j.model, seed: j.seed, status: "pending", ...(j.pose ? { pose: j.pose } : {}) })),
   };
   const save = async () => {
     await writeAtomic(join(dir, "collection.json"), JSON.stringify(m, null, 2));
@@ -171,7 +179,7 @@ export async function runCollection(opts: {
       await writeAtomic(join(dir, `${name}.png`), png);
       await writeAtomic(
         join(dir, `${name}.json`),
-        JSON.stringify({ frame: job.frame, model: job.model, summary: job.summary, variant: job.variant, seed: job.seed, promptId: rec.promptId, seconds, image: images[0], graph: job.graph, history }, null, 2),
+        JSON.stringify({ frame: job.frame, model: job.model, summary: job.summary, variant: job.variant, seed: job.seed, ...(job.pose ? { pose: job.pose } : {}), promptId: rec.promptId, seconds, image: images[0], graph: job.graph, history }, null, 2),
       );
       rec.png = `${name}.png`;
       rec.seconds = seconds;

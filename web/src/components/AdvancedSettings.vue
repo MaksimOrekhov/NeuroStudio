@@ -31,10 +31,11 @@ const ownText = (n: number) => (n === 1 ? "1 своя настройка" : `${n
       <span class="chev" :class="{ open: ui.advancedOpen }" aria-hidden="true">›</span>
       <span class="title">
         <b>Дополнительные настройки</b>
-        <small>Генерация промптов · Prompt Evolution · Композиция</small>
+        <small>Генерация промптов · Prompt Evolution · Позы · Композиция</small>
       </span>
       <span class="sum">
         <span class="chip">Codex: {{ codexSummary }}</span>
+        <span class="chip" :class="{ on: form.poseMode === 'auto' }">Позы: {{ form.poseMode === "auto" ? "из библиотеки" : "свободные" }}</span>
         <span class="chip" :class="{ on: guided }">Композиция: {{ compSummary }}</span>
       </span>
     </button>
@@ -70,6 +71,20 @@ const ownText = (n: number) => (n === 1 ? "1 своя настройка" : `${n
       </section>
 
       <EvolutionBlock />
+
+      <section class="block">
+        <div class="bh">
+          <h3>Позы</h3>
+          <p class="muted small">«Авто» даёт Codex подборку из библиотеки NeuroStudio (8–12 простых и выразительных поз) в том же запросе. Codex сам выбирает позу для каждого кадра или придумывает свою, если ни одна не подходит. Композиция, заданная ниже, важнее библиотеки.</p>
+        </div>
+        <label class="field narrow">
+          <span>Выбор поз</span>
+          <select v-model="form.poseMode" :class="{ set: form.poseMode === 'auto' }">
+            <option value="free">Свободный — Codex придумывает позы сам</option>
+            <option value="auto">Авто — из библиотеки</option>
+          </select>
+        </label>
+      </section>
 
       <section class="block">
         <div class="bh split">
@@ -147,6 +162,7 @@ const ownText = (n: number) => (n === 1 ? "1 своя настройка" : `${n
 .bh h3 { font-size: 15px; }
 .bh.split { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .sub { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; margin-top: 6px; }
+.field.narrow { max-width: 340px; }
 .row2 { display: grid; grid-template-columns: repeat(2, minmax(0, 340px)); gap: 12px; }
 /* Up to four selects per row, each at least 260 px so long Russian option names stay readable. */
 .row4 { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }

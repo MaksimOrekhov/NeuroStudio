@@ -152,6 +152,9 @@ const date = computed(() => dateFullRu(props.c.createdAt));
             <small v-if="f.promptEdited" class="edited">Промпт изменён · из варианта {{ f.sourceVariant }}</small>
             <small v-else-if="f.sourceVariant" class="edited">Перегенерация варианта {{ f.sourceVariant }}</small>
             <p v-if="s.summary" class="sum">{{ s.summary }}</p>
+            <p v-if="f.pose" class="pose" :title="f.pose.description">
+              Поза: {{ f.pose.label ?? (f.pose.id === "free" ? "своя (Codex)" : "из библиотеки") }}<template v-if="!f.pose.verified"> · промпт изменён, соответствие не проверено</template>
+            </p>
           </template>
         </section>
       </div>
@@ -278,6 +281,7 @@ dd { margin: 0; font-size: 14px; }
 .sl li { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 details { font-size: 12px; }
 summary { cursor: pointer; color: var(--accent-2); }
+.pose { font-size: 12px; color: var(--muted); }
 table { width: 100%; border-collapse: collapse; margin-top: 6px; font-variant-numeric: tabular-nums; }
 td { padding: 3px 4px; border-top: 1px solid var(--line); color: var(--text-2); }
 .pid { word-break: break-all; color: var(--muted); }
