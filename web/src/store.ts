@@ -289,6 +289,14 @@ watch(
   (on) => store.set(EVOLUTION_KEY, on ? "1" : "0"),
 );
 
+// Pose selection (NS-026): free until the user picks the library; the choice is remembered locally.
+const POSE_KEY = "neurostudio.poseMode";
+form.poseMode = store.get(POSE_KEY) === "auto" ? "auto" : "free";
+watch(
+  () => form.poseMode,
+  (m) => store.set(POSE_KEY, m),
+);
+
 /** Read-only look at what would be sent to Codex (GET /api/prompt-evolution/preview; no Codex is started). */
 export const evolution = reactive({ open: false, loading: false, data: null as EvolutionPreview | null, error: null as UiError | null });
 let evolutionSeq = 0;

@@ -9,6 +9,7 @@ import { INSTRUCTIVE, flatten } from "../src/untrustedText.ts";
 import { loadComparisons, type Comparisons } from "./comparisons.ts";
 import { listCollections, loadFeedback, type CollectionView, type Feedback } from "./collections.ts";
 import { extractPromptFeatures, type Feature, type PromptFeatures } from "./promptFeatures.ts";
+import { FREE_POSE } from "../src/poses.ts";
 
 export const MEMORY_VERSION = 2;
 /** Latest collections analysed (a constant on purpose: change it here). */
@@ -138,6 +139,16 @@ export interface FeatureStat {
   collections: number;
   confidence: Confidence;
 }
+export interface PoseStat {
+  poseId: string;
+  images: number;
+  collections: number;
+  likes: number;
+  dislikes: number;
+  best: number;
+  arenaPreferred: number;
+  issues: { hands: number; legs: number; body: number; angle: number; composition: number };
+}
 /** Distinct images (one observation per image) showing a preference of one kind, without any stated reason. */
 export interface PrefStat {
   images: number;
@@ -183,6 +194,12 @@ export interface PreferenceMemory {
   /** Recent explicit reviews selected for the planning context. */
   reviews: Review[];
   features: FeatureStat[];
+  /**
+   * NS-026: feedback per catalog pose, for later analysis only. It is never sent to Codex and never ranks or bans a pose. Only images
+   * whose prompt is still the planned one count (an edited prompt is excluded); this is the planned pose, never a check of the image. Problems are kept apart: hands, legs, body (pose/proportions/
+   * anatomy), angle and composition; likes, dislikes, Best and Arena are overall preference and say nothing about anatomy.
+   */
+  poses?: PoseStat[];
   featureCoverage: { sidecars: number; identified: number };
   recommendations: string[];
   /**
@@ -331,6 +348,36 @@ export function extractExcerpt(raw: string): string | null {
 
 // ---------- analysis ----------
 
+const POSE_ISSUES: Record<keyof PoseStat["issues"], ReadonlySet<string>> = {
+  hands: new Set(["bad_hands"]),
+  legs: new Set(["bad_legs"]),
+  body: new Set(["awkward_pose", "body_proportions", "anatomy"]),
+  angle: new Set(["bad_angle"]),
+  composition: new Set(["composition", "bad_crop", "poor_subject_placement", "repetitive_composition"]),
+};
+
+/** NS-026: raw per-pose counts of images with any signal (see PreferenceMemory.poses). */
+export function poseStats(images: ReadonlyArray<Pick<Img, "poseId" | "collection" | "verdict" | "tags" | "best" | "net">>): PoseStat[] {
+  const groups = new Map<string, typeof images[number][]>();
+  for (const im of images) {
+    if (!im.poseId || !(im.verdict || im.best || im.net)) continue;
+    groups.set(im.poseId, [...(groups.get(im.poseId) ?? []), im]);
+  }
+  return [...groups].map(([poseId, imgs]) => {
+    const issue = (k: keyof PoseStat["issues"]) => imgs.filter((i) => i.verdict === "dislike" && i.tags.some((t) => POSE_ISSUES[k].has(t))).length;
+    return {
+      poseId,
+      images: imgs.length,
+      collections: new Set(imgs.map((i) => i.collection.id)).size,
+      likes: imgs.filter((i) => i.verdict === "like").length,
+      dislikes: imgs.filter((i) => i.verdict === "dislike").length,
+      best: imgs.filter((i) => i.best).length,
+      arenaPreferred: imgs.filter((i) => i.net > 0).length,
+      issues: { hands: issue("hands"), legs: issue("legs"), body: issue("body"), angle: issue("angle"), composition: issue("composition") },
+    };
+  }).sort((a, b) => b.images - a.images || a.poseId.localeCompare(b.poseId));
+}
+
 interface Img {
   key: string;
   collection: CollectionView;
@@ -346,6 +393,8 @@ interface Img {
   /** wins - losses over all comparisons of this image (ties count for nothing). */
   net: number;
   compared: boolean;
+  /** NS-026: planned catalog pose of the image (not "free", prompt not edited after planning). */
+  poseId?: string;
 }
 
 const conflicted = (i: Img) => i.verdict === "dislike" && (i.best || i.net > 0);
@@ -487,6 +536,7 @@ export async function buildMemory(dir: string, limit = COLLECTION_LIMIT): Promis
         best: selections[String(f.frame)] === f.variant,
         net: 0,
         compared: false,
+        ...(f.pose?.promptAsPlanned && f.pose.id !== FREE_POSE ? { poseId: f.pose.id } : {}),
       });
     }
     // Arena: one image is one observation however many comparisons it took part in (they are linked, not independent).
@@ -569,6 +619,7 @@ export async function buildMemory(dir: string, limit = COLLECTION_LIMIT): Promis
     collection,
     reviews,
     features,
+    poses: poseStats(images),
     featureCoverage: { sidecars: rated.filter((i) => i.rawPrompt).length, identified: rated.filter((i) => i.features && Object.keys(i.features).length).length },
     recommendations: [],
     preferred,

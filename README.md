@@ -24,5 +24,6 @@ NS-013: интерактивный UX-прототип нового интерф
 NS-014: движок гибкой генерации (backend) — коллекции из 1–4 кадров, модель на кадр, Prompt Plan v3, `GET /api/runs`, коды ошибок; UI подключается в NS-015 — [docs/ns-014-flexible-generation.md](docs/ns-014-flexible-generation.md).
 NS-015: рабочий русский интерфейс (Создание / Библиотека / Запуски) на реальном API — [docs/ns-015-production-ui.md](docs/ns-015-production-ui.md). Просмотр без Codex и ComfyUI: `npx tsx scripts/ui-test-server.ts`.
 NS-021: исправления надёжности сохранения, конкурентных операций и обновления интерфейса; минимальный CI — [docs/ns-021-reliability-hardening.md](docs/ns-021-reliability-hardening.md).
+NS-026: автоматический выбор поз из библиотеки NeuroStudio (`prompts/pose-catalog.json`, режим «Авто — из библиотеки» в дополнительных настройках) — [docs/ns-026-adaptive-pose-selection.md](docs/ns-026-adaptive-pose-selection.md).
 
 Модели изображений: Crimson Oath, Duskrose и [IllustrijN](docs/illustrijn-model.md). Доступны отдельная модель, покадровый выбор и автоподбор.

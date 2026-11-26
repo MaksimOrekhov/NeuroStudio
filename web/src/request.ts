@@ -18,6 +18,8 @@ export interface FormState {
   codexEffort: string;
   /** NS-020: take my ratings into account (off until the user switches it on). */
   promptEvolution: boolean;
+  /** NS-026: "free" (default, as before) or "auto" (Codex picks from the pose library). */
+  poseMode: "free" | "auto";
   global: Fields;
   /** Settings of all MAX_FRAMES scenes; only the first `frames` are ever sent. */
   scenes: Fields[];
@@ -34,6 +36,7 @@ export function defaultForm(): FormState {
     codexModel: "",
     codexEffort: "",
     promptEvolution: false,
+    poseMode: "free",
     global: blank(AUTO),
     scenes: Array.from({ length: MAX_FRAMES }, () => blank(INHERIT)),
   };
@@ -72,5 +75,6 @@ export function buildStartRequest(f: FormState): Readonly<StartRequest> {
   if (f.codexModel) req.codexModel = f.codexModel;
   if (f.codexEffort) req.codexReasoningEffort = f.codexEffort;
   if (f.promptEvolution) req.promptEvolution = true; // off = the request is exactly what it was before NS-020
+  if (f.poseMode === "auto") req.poseSelection = "auto"; // free = the request is exactly what it was before NS-026
   return freeze(structuredClone(req));
 }

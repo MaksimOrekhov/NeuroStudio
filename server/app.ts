@@ -10,6 +10,7 @@ import { getThumbnail } from "./thumbs.ts";
 import { parseComposition } from "../src/composition.ts";
 import { loadCatalog, resolveSelection, CodexSelectionError, effortLabel, type Catalog } from "../src/codexModels.ts";
 import { parseCount, parseFrames, parseVariations } from "../src/promptPlan.ts";
+import { parsePoseMode, type PoseMode } from "../src/poses.ts";
 import { resolveImageModels } from "../src/imageModels.ts";
 import type { ErrorCode } from "../src/errors.ts";
 import { ComparisonError, readComparisons, setComparison } from "./comparisons.ts";
@@ -74,6 +75,7 @@ export function buildApp(d: AppDeps) {
     let composition: ReturnType<typeof parseComposition>;
     let codex: ReturnType<typeof resolveSelection>;
     let promptEvolution = false;
+    let poseSelection: PoseMode;
     // Everything is validated here, before ComfyUI is contacted and before Codex is started.
     try {
       count = parseCount(body.collections);
@@ -81,6 +83,7 @@ export function buildApp(d: AppDeps) {
       variations = parseVariations(body.variations);
       if (body.promptEvolution !== undefined && typeof body.promptEvolution !== "boolean") throw new Error("promptEvolution must be a boolean");
       promptEvolution = body.promptEvolution === true;
+      poseSelection = parsePoseMode(body.poseSelection); // NS-026: absent = "free", the pre-NS-026 behaviour
       images = resolveImageModels(body.imageModels, frames);
       composition = parseComposition(body.composition, frames);
       codex = body.codexModel == null && body.codexReasoningEffort == null ? {} : resolveSelection(await catalog(), body.codexModel, body.codexReasoningEffort); // old calls never touch the catalog
@@ -89,7 +92,7 @@ export function buildApp(d: AppDeps) {
     }
     const theme = typeof body.theme === "string" ? body.theme.trim().slice(0, 200) : "";
     try {
-      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations, composition, codex, images, promptEvolution));
+      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations, composition, codex, images, promptEvolution, poseSelection));
     } catch (e) {
       if (e instanceof RunError) return fail(reply, e.httpStatus, e.code, e.message);
       throw e;

@@ -4,9 +4,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import type { CodexSelection } from "./codexModels.ts";
-import { compositionPrompt, type Composition } from "./composition.ts";
+import { compositionPrompt, resolveComposition, type Composition } from "./composition.ts";
 import { MAX_FRAMES, MODEL_IDS, autoMix } from "./imageModels.ts";
-import { validateBatch, validatePlan, type PromptPlan } from "./promptPlan.ts";
+import { FREE_POSE, validateBatch, validatePlan, type PromptPlan } from "./promptPlan.ts";
+import { framePoseIds, listedIds, posePrompt, type PoseEntry } from "./poses.ts";
 
 export class CodexError extends Error {}
 
@@ -27,7 +28,7 @@ export async function loadInstructions(path = INSTRUCTIONS_PATH): Promise<string
 }
 
 /** instructions + the request. Format: Prompt Plan, or a Batch Plan {collections: PromptPlan[]} when `asBatch` (default: count > 1; generateBatch always passes true, also for one collection). */
-export function planPrompt(instructions: string, theme?: string, avoid: string[] = [], count = 1, composition?: Composition, models?: readonly string[], asBatch = count > 1, preferences = "", visualHistory = ""): string {
+export function planPrompt(instructions: string, theme?: string, avoid: string[] = [], count = 1, composition?: Composition, models?: readonly string[], asBatch = count > 1, preferences = "", visualHistory = "", poseLibrary = ""): string {
   const batch = asBatch; // response format: Batch Plan {collections: [...]} even when count = 1 (generateBatch)
   const several = count > 1;
   const themeLine = theme
@@ -52,7 +53,9 @@ The ${count} collections must be substantially different from each other (concep
 Task: ${themeLine}
 ${ask}${avoidLine}${visualHistory ? `
 
-${visualHistory}` : ""}${distinct}${framesPrompt(models)}${compositionPrompt(composition, models?.length)}${preferences ? `
+${visualHistory}` : ""}${distinct}${framesPrompt(models)}${compositionPrompt(composition, models?.length)}${poseLibrary ? `
+
+${poseLibrary}` : ""}${preferences ? `
 
 ${preferences}` : ""}`;
 }
@@ -70,12 +73,17 @@ Also fill the Russian interface fields: concept.titleRu, concept.descriptionRu a
 }
 
 /** JSON schema of one Prompt Plan with exactly models.length frames (derived from schemas/prompt-plan.schema.json). */
-export async function planSchema(models: readonly string[] = autoMix(MAX_FRAMES), planSchemaPath = SCHEMA): Promise<object> {
+export async function planSchema(models: readonly string[] = autoMix(MAX_FRAMES), planSchemaPath = SCHEMA, poseIds?: readonly string[]): Promise<object> {
   const schema = JSON.parse(await readFile(planSchemaPath, "utf8"));
   const frames = schema.properties.frames;
   frames.minItems = frames.maxItems = models.length;
   frames.items.properties.frame.maximum = models.length;
   frames.items.properties.model.enum = MODEL_IDS.filter((id) => models.includes(id));
+  if (poseIds) {
+    // NS-026 auto mode only: free-mode requests keep the exact pre-NS-026 schema.
+    frames.items.properties.poseId = { type: "string", enum: [...poseIds, FREE_POSE], description: `Id of the listed pose this frame is built on, or "${FREE_POSE}" when none fits` };
+    frames.items.required.push("poseId");
+  }
   return schema;
 }
 
@@ -127,6 +135,8 @@ export interface BatchOptions extends CodexOptions {
   preferences?: string;
   /** NS-023: compact visual memory of recent collections (see visualHistory.ts). Absent/empty = the request is exactly as before. */
   history?: string;
+  /** NS-026 auto pose mode: the catalog sample for this request. Absent = free mode: request, schema and validation exactly as before. */
+  poses?: { catalogVersion: number; sample: readonly PoseEntry[]; /** Soft view-history hint (server/poseHistory.ts). */ note?: string };
 }
 
 /** Arguments for `codex exec` (no shell). An explicit model beats CODEX_MODEL; Default adds no override at all. */
@@ -208,8 +218,8 @@ export async function generatePlan(opts: CodexOptions = {}): Promise<CodexResult
 }
 
 /** JSON schema for a Batch Plan of exactly `count` Prompt Plans; `models` fixes the frames (default: the file as is, 1-4 frames). */
-export async function batchSchema(count: number, planSchemaPath = SCHEMA, models?: readonly string[]): Promise<object> {
-  const plan = models ? await planSchema(models, planSchemaPath) : JSON.parse(await readFile(planSchemaPath, "utf8"));
+export async function batchSchema(count: number, planSchemaPath = SCHEMA, models?: readonly string[], poseIds?: readonly string[]): Promise<object> {
+  const plan = models ? await planSchema(models, planSchemaPath, poseIds) : JSON.parse(await readFile(planSchemaPath, "utf8"));
   return {
     type: "object",
     additionalProperties: false,
@@ -222,8 +232,14 @@ export async function batchSchema(count: number, planSchemaPath = SCHEMA, models
 export async function generateBatch(opts: BatchOptions): Promise<BatchResult> {
   const models = opts.models ?? autoMix(MAX_FRAMES);
   const instructions = await loadInstructions();
-  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count, opts.composition, models, true, opts.preferences, opts.history), await batchSchema(opts.count, SCHEMA, models), timeout(opts, opts.count), opts.launcher, selection(opts));
-  return { plans: validateBatch(r.json, opts.count, { models }), raw: r.raw, ms: r.ms, tokens: r.tokens };
+  const lib = opts.poses?.sample.length ? opts.poses : undefined;
+  const poseIds = lib ? listedIds(lib.sample, lib.catalogVersion) : undefined;
+  // Each frame may only use ids that fit ITS explicit composition requirements (null = no requirements).
+  const listed = lib ? lib.sample.filter((p) => poseIds!.includes(p.id)) : [];
+  const perFrame = lib ? framePoseIds(listed, resolveComposition(opts.composition, models.length), models.length) : undefined;
+  const poseText = lib ? posePrompt(lib.sample, lib.catalogVersion, perFrame, lib.note) : "";
+  const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count, opts.composition, models, true, opts.preferences, opts.history, poseText), await batchSchema(opts.count, SCHEMA, models, poseIds), timeout(opts, opts.count), opts.launcher, selection(opts));
+  return { plans: validateBatch(r.json, opts.count, { models, ...(poseIds ? { poseIds, framePoseIds: perFrame } : {}) }), raw: r.raw, ms: r.ms, tokens: r.tokens };
 }
 
 /** Reads token usage from `codex exec --json` events (turn.completed). */

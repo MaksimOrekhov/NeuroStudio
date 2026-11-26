@@ -8,6 +8,7 @@ import { FIELDS, ComfyUnavailableError, applyParams, type ComfyClient, type Grap
 import type { FrameRecord, Manifest } from "./collection.ts";
 import type { ErrorCode } from "./errors.ts";
 import { io, writeAtomic } from "./persistence.ts";
+import { readFramePose, type FramePose } from "./poses.ts";
 export { io, writeAtomic } from "./persistence.ts";
 
 const SEED_MAX = 2 ** 48 - 1;
@@ -38,6 +39,8 @@ export interface RegenSource {
   graph: Graph;
   /** True when this variant is itself a regeneration with an edited prompt. */
   promptEdited: boolean;
+  /** NS-026: the source's pose record (absent for images made without the pose catalog). */
+  pose?: FramePose;
 }
 
 function collectionDir(dir: string, id: string): string {
@@ -106,7 +109,7 @@ export async function loadSource(dir: string, id: string, frame: number, variant
     throw unavailable(`frame ${frame} variant ${variant}: image file ${rec.png} is missing on disk`);
   }
   const sidecarName = rec.png.replace(/\.png$/, ".json");
-  let side: { graph?: unknown; promptEdited?: unknown };
+  let side: { graph?: unknown; promptEdited?: unknown; pose?: unknown };
   try {
     side = JSON.parse(await readFile(join(cdir, sidecarName), "utf8"));
   } catch {
@@ -122,7 +125,8 @@ export async function loadSource(dir: string, id: string, frame: number, variant
   } catch (e) {
     throw unavailable(`frame ${frame} variant ${variant}: the saved graph is not usable (${(e as Error).message})`);
   }
-  return { frame, variant, model: rec.model, positive: text, graph, promptEdited: side.promptEdited === true };
+  const pose = readFramePose(side.pose) ?? readFramePose(rec.pose);
+  return { frame, variant, model: rec.model, positive: text, graph, promptEdited: side.promptEdited === true, ...(pose ? { pose } : {}) };
 }
 
 export interface Reservation {
@@ -132,6 +136,7 @@ export interface Reservation {
   graph: Graph;
   positive: string;
   promptEdited: boolean;
+  pose?: FramePose;
   record: FrameRecord;
   manifest: Manifest;
   collectionDir: string;
@@ -170,8 +175,10 @@ export async function reserve(dir: string, id: string, src: RegenSource, positiv
   // Only these three change; negative prompt, model, sampler settings and size stay exactly as in the saved graph.
   const graph = applyParams(src.graph, { positive: text, seed, filenamePrefix: `${folder}/${name}` });
   const promptEdited = positive !== undefined && positive !== src.positive;
-  const record: FrameRecord = { frame: src.frame, variant, model: src.model, seed, status: "pending", sourceVariant: src.variant, ...(promptEdited ? { promptEdited: true } : {}) };
-  await writeSidecar(cdir, name, { frame: src.frame, variant, model: src.model, seed, sourceVariant: src.variant, promptEdited, positive: text, status: "pending", graph });
+  // NS-026: an unchanged prompt keeps the source's planned pose. After an edit the provenance stays, but the prompt is no longer the planned one.
+  const pose: FramePose | undefined = src.pose && (promptEdited ? { ...src.pose, promptAsPlanned: false } : src.pose);
+  const record: FrameRecord = { frame: src.frame, variant, model: src.model, seed, status: "pending", sourceVariant: src.variant, ...(promptEdited ? { promptEdited: true } : {}), ...(pose ? { pose } : {}) };
+  await writeSidecar(cdir, name, { frame: src.frame, variant, model: src.model, seed, sourceVariant: src.variant, promptEdited, ...(pose ? { pose } : {}), positive: text, status: "pending", graph });
   m.frames.push(record);
   try {
     await saveManifest(cdir, m);
@@ -180,7 +187,7 @@ export async function reserve(dir: string, id: string, src: RegenSource, positiv
     await io.unlink(join(cdir, `${name}.json`)).catch(() => {});
     throw e;
   }
-  return { name, variant, seed, graph, positive: text, promptEdited, record, manifest: m, collectionDir: cdir };
+  return { name, variant, seed, graph, positive: text, promptEdited, ...(pose ? { pose } : {}), record, manifest: m, collectionDir: cdir };
 }
 
 type Client = Pick<ComfyClient, "systemStats" | "checkDependencies" | "submit" | "waitForImages" | "download">;
@@ -194,7 +201,7 @@ export async function runRegeneration(opts: { r: Reservation; client: Client; fr
   const { r, client } = opts;
   const rec = r.record;
   const cdir = r.collectionDir;
-  const base = { frame: rec.frame, variant: r.variant, model: rec.model, seed: r.seed, sourceVariant: rec.sourceVariant, promptEdited: r.promptEdited, positive: r.positive, graph: r.graph };
+  const base = { frame: rec.frame, variant: r.variant, model: rec.model, seed: r.seed, sourceVariant: rec.sourceVariant, promptEdited: r.promptEdited, ...(r.pose ? { pose: r.pose } : {}), positive: r.positive, graph: r.graph };
   const t0 = Date.now();
   /** Persistence problems after ComfyUI accepted the job: never fatal for the job itself, never a reason to resubmit. */
   const problems: string[] = [];

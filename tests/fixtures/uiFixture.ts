@@ -203,6 +203,8 @@ export async function createFakeApp(opts: { fx: Awaited<ReturnType<typeof create
         plans: Array.from({ length: o.count }, (_, i) => {
           const p = planV3(`Fake concept ${seen.plan.length}-${i + 1}`, o.models);
           p.concept.titleRu = titles[i % titles.length];
+          // NS-026: in auto pose mode pick from the offered sample like Codex would (the last frame invents its own pose).
+          if (o.poses) p.frames.forEach((f, j) => (f.poseId = j < p.frames.length - 1 ? (o.poses!.sample[j]?.id ?? "free") : "free"));
           return p;
         }),
         raw: "",

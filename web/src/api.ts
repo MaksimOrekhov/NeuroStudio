@@ -20,6 +20,8 @@ export interface Frame {
   sourceVariant?: number;
   /** The prompt was edited before regenerating. */
   promptEdited?: boolean;
+  /** NS-026: pose from the library (auto pose mode). label = human-readable name; absent when Codex invented the pose. */
+  pose?: { id: string; label?: string; description?: string; promptAsPlanned: boolean };
 }
 
 export interface Feedback {
@@ -100,6 +102,8 @@ export interface RunState {
   currentFrame?: number;
   /** NS-020: what Prompt Evolution did for this run. */
   evolution?: { enabled: boolean; applied: boolean; reason?: string; error?: string };
+  /** NS-026: pose selection mode (absent = free). */
+  poseSelection?: "free" | "auto";
   /** Present while/after a targeted regeneration of one image (same lock and state as a run). */
   regeneration?: { collectionId: string; frame: number; variant: number; sourceVariant: number };
   finished: string[];
@@ -180,6 +184,8 @@ export interface StartRequest {
   codexReasoningEffort?: string;
   /** NS-020: add the Preference Memory to the Codex request (sent only when switched on). */
   promptEvolution?: boolean;
+  /** NS-026: sent only for the library mode; absent = free. */
+  poseSelection?: "auto";
 }
 export const startRun = (req: StartRequest) =>
   json<RunState>("/api/autopilot/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });

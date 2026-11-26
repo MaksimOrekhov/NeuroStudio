@@ -42,6 +42,10 @@ async function generate() {
         <dd>{{ codex }}</dd>
       </div>
       <div>
+        <dt>Позы</dt>
+        <dd :class="{ muted: form.poseMode !== 'auto' }">{{ form.poseMode === "auto" ? "Авто — из библиотеки поз" : "Свободные — придумывает Codex" }}</dd>
+      </div>
+      <div>
         <dt>Композиция</dt>
         <dd :class="{ muted: !guided }">{{ guided ? `Задана для ${guided} из ${form.frames} ${form.frames === 1 ? "кадра" : "кадров"}` : "Авто — решает Codex" }}</dd>
       </div>
