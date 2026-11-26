@@ -152,8 +152,8 @@ const date = computed(() => dateFullRu(props.c.createdAt));
             <small v-if="f.promptEdited" class="edited">Промпт изменён · из варианта {{ f.sourceVariant }}</small>
             <small v-else-if="f.sourceVariant" class="edited">Перегенерация варианта {{ f.sourceVariant }}</small>
             <p v-if="s.summary" class="sum">{{ s.summary }}</p>
-            <p v-if="f.pose" class="pose" :title="f.pose.description">
-              Поза: {{ f.pose.label ?? (f.pose.id === "free" ? "своя (Codex)" : "из библиотеки") }}<template v-if="!f.pose.verified"> · промпт изменён, соответствие не проверено</template>
+            <p v-if="f.pose" class="pose" :title="f.pose.description ? `${f.pose.description} — поза, заложенная в промпт; изображение автоматически не проверяется` : 'Поза, заложенная в промпт; изображение автоматически не проверяется'">
+              Поза по плану: {{ f.pose.label ?? (f.pose.id === "free" ? "своя (Codex)" : "из библиотеки") }}<template v-if="!f.pose.promptAsPlanned"> · промпт изменён после планирования</template>
             </p>
           </template>
         </section>

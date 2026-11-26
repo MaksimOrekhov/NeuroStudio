@@ -175,8 +175,8 @@ export async function reserve(dir: string, id: string, src: RegenSource, positiv
   // Only these three change; negative prompt, model, sampler settings and size stay exactly as in the saved graph.
   const graph = applyParams(src.graph, { positive: text, seed, filenamePrefix: `${folder}/${name}` });
   const promptEdited = positive !== undefined && positive !== src.positive;
-  // NS-026: an unchanged prompt keeps the source's pose. After an edit the provenance stays, but the link is no longer claimed as verified.
-  const pose: FramePose | undefined = src.pose && (promptEdited ? { ...src.pose, verified: false } : src.pose);
+  // NS-026: an unchanged prompt keeps the source's planned pose. After an edit the provenance stays, but the prompt is no longer the planned one.
+  const pose: FramePose | undefined = src.pose && (promptEdited ? { ...src.pose, promptAsPlanned: false } : src.pose);
   const record: FrameRecord = { frame: src.frame, variant, model: src.model, seed, status: "pending", sourceVariant: src.variant, ...(promptEdited ? { promptEdited: true } : {}), ...(pose ? { pose } : {}) };
   await writeSidecar(cdir, name, { frame: src.frame, variant, model: src.model, seed, sourceVariant: src.variant, promptEdited, ...(pose ? { pose } : {}), positive: text, status: "pending", graph });
   m.frames.push(record);

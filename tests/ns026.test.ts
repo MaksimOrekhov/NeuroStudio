@@ -16,11 +16,12 @@ import { BANNED, FREE_POSE, validatePlan, type PromptPlan } from "../src/promptP
 import { loadSource, reserve } from "../src/regenerate.ts";
 import { resolveComposition } from "../src/composition.ts";
 import {
-  PER_SCENE, POSE_PROMPT_MAX, SAMPLE_MAX, SAMPLE_MIN, anatomyCaution, catalogProblems, codexText, compatible, countPoseUses, listedIds,
+  PER_SCENE, POSE_PROMPT_MAX, SAMPLE_MAX, SAMPLE_MIN, anatomyCaution, catalogProblems, codexText, compatible, countPoseUses, framePoseIds, listedIds,
   loadPoseCatalog, parsePoseMode, posePrompt, sampleSize, selectPoses, type PoseCatalog,
 } from "../src/poses.ts";
 import { buildStartRequest, defaultForm } from "../web/src/request.ts";
 import { planV3 } from "./fixtures/strictPlan.ts";
+import { frameDirection, viewHistory, viewNote } from "../server/poseHistory.ts";
 
 const H = { host: "127.0.0.1:8787" };
 const catalog = loadPoseCatalog();
@@ -270,7 +271,7 @@ test("auto mode end to end: ONE Codex call, the sample and seed in batch-plan.js
   assert.equal(plan.frames[0].poseId, b.poseSelection.sample[0]);
   assert.equal(plan.frames[1].poseId, FREE_POSE);
   for (const f of manifest.frames) {
-    assert.deepEqual(f.pose, { id: plan.frames[f.frame - 1].poseId, catalogVersion: catalog.version, verified: true }, `frame ${f.frame} v${f.variant} inherits`);
+    assert.deepEqual(f.pose, { id: plan.frames[f.frame - 1].poseId, catalogVersion: catalog.version, promptAsPlanned: true }, `frame ${f.frame} v${f.variant} inherits`);
     const side = JSON.parse(await readFile(join(e.dir, id, f.png.replace(".png", ".json")), "utf8"));
     assert.deepEqual(side.pose, f.pose);
   }
@@ -281,14 +282,14 @@ test("auto mode end to end: ONE Codex call, the sample and seed in batch-plan.js
   assert.equal(view.frames.find((f: { frame: number }) => f.frame === 2).pose.label, undefined);
   assert.equal(e.submits(), 4);
 
-  // Targeted regeneration: same prompt keeps the verified pose; an edited prompt keeps provenance but is no longer verified.
+  // Targeted regeneration: same prompt keeps the planned pose; an edited prompt keeps provenance but is no longer the planned prompt.
   const same = await reserve(e.dir, id, await loadSource(e.dir, id, 1, 1), undefined);
-  assert.deepEqual(same.record.pose, { id: plan.frames[0].poseId, catalogVersion: catalog.version, verified: true });
+  assert.deepEqual(same.record.pose, { id: plan.frames[0].poseId, catalogVersion: catalog.version, promptAsPlanned: true });
   const src = await loadSource(e.dir, id, 1, 1);
   const edited = await reserve(e.dir, id, src, `${src.positive}, holding a red umbrella`);
-  assert.deepEqual(edited.record.pose, { id: plan.frames[0].poseId, catalogVersion: catalog.version, verified: false });
+  assert.deepEqual(edited.record.pose, { id: plan.frames[0].poseId, catalogVersion: catalog.version, promptAsPlanned: false });
   const side = JSON.parse(await readFile(join(e.dir, id, `${edited.name}.json`), "utf8"));
-  assert.equal(side.pose.verified, false);
+  assert.equal(side.pose.promptAsPlanned, false);
   await e.app.close();
 });
 
@@ -343,7 +344,7 @@ test("old collections: no pose anywhere, nothing breaks, nothing is rewritten", 
   assert.equal((await readCollection(dir, id))!.frames[0].pose, undefined);
 });
 
-test("Prompt Evolution: per-pose feedback keeps problem kinds apart and ignores unverified links; it is never sent to Codex", () => {
+test("Prompt Evolution: per-pose feedback keeps problem kinds apart and ignores edited prompts; it is never sent to Codex", () => {
   const c = (id: string) => ({ id }) as never;
   const img = (poseId: string | undefined, collection: string, verdict: "like" | "dislike" | undefined, tags: string[], best = false, net = 0) => ({ poseId, collection: c(collection), verdict, tags, best, net });
   const stats = poseStats([
@@ -351,7 +352,7 @@ test("Prompt Evolution: per-pose feedback keeps problem kinds apart and ignores 
     img("ND-P25", "b", "dislike", ["bad_legs", "bad_angle"]),
     img("ND-P25", "b", "like", ["natural_pose"], true, 1),
     img("ND-P25", "c", undefined, [], false, 0), // no signal
-    img(undefined, "a", "dislike", ["awkward_pose"]), // unverified (edited prompt) or free: not counted
+    img(undefined, "a", "dislike", ["awkward_pose"]), // edited prompt or free: not counted
     img("ND-P02", "a", "dislike", ["composition", "body_proportions"]),
   ]);
   assert.deepEqual(stats.find((s) => s.poseId === "ND-P25"), {
@@ -376,4 +377,184 @@ test("with Prompt Evolution: one request carries the library and the preferences
   assert.match(reqs[0], /then relevant feedback from the preference notes/);
   assert.equal((await e.batch()).poseSelection.cautious, true);
   await e.app.close();
+});
+
+// ---------- review fix: anchors, view/shot diversity, per-frame contract, view history ----------
+
+test("selection: poses that need a specific object stay within about a third of an automatic sample", () => {
+  for (const [frames, collections] of [[4, 1], [4, 3], [1, 1]]) {
+    const size = sampleSize(frames, collections);
+    for (let seed = 0; seed < 60; seed++) {
+      const s = select({ seed, frames, collections });
+      assert.ok(s.filter((p) => p.anchor === "object").length <= Math.ceil(size / 3), `seed ${seed}, size ${size}`);
+    }
+  }
+  const bad = { ...catalog, poses: [{ ...catalog.poses[0], anchor: "wall" }] };
+  assert.equal(catalogProblems(bad).filter((e) => /anchor/.test(e)).length, 1);
+});
+
+test("selection: families, view directions and shot sizes are all spread out", () => {
+  const groupOfView = (v: string) => (/side_profile/.test(v) ? "side" : /rear|over_the_shoulder|turned_away/.test(v) ? "rear" : "front");
+  const groupOfCrop = (c: string) => (/face|head_and|chest/.test(c) ? "close" : /waist|mid_thigh/.test(c) ? "middle" : "long");
+  for (let seed = 0; seed < 40; seed++) {
+    const s = select({ seed });
+    assert.ok(new Set(s.map((p) => p.family)).size >= 4, `families, seed ${seed}`);
+    assert.equal(new Set(s.flatMap((p) => p.views.map(groupOfView))).size, 3, `views, seed ${seed}`);
+    assert.equal(new Set(s.flatMap((p) => p.crops.map(groupOfCrop))).size, 3, `shot sizes, seed ${seed}`);
+  }
+  // Rear, seated and reclining poses are not excluded globally.
+  const all = new Set(Array.from({ length: 40 }, (_, seed) => select({ seed })).flat().map((p) => p.family as string));
+  for (const f of ["rear", "seated", "reclining"]) assert.ok(all.has(f), f);
+});
+
+test("selection: explicit composition outranks the object cap and the diversity rules", () => {
+  const resolved = resolveComposition({ global: { pose: "leaning_on_a_surface" } }, 2);
+  for (let seed = 0; seed < 20; seed++) {
+    const s = select({ seed, frames: 2, resolved });
+    const fit = s.filter((p) => compatible(p, resolved[0]));
+    assert.ok(fit.length >= PER_SCENE, `seed ${seed}`);
+    assert.ok(fit.every((p) => p.anchor === "object"), "every surface-leaning pose needs an object: kept anyway");
+    assert.ok(s.every((p) => compatible(p, resolved[0])), "nothing incompatible with the user's pose");
+  }
+});
+
+test("per-frame contract: a pose allowed for one frame but not for another is refused; free and unconstrained frames work", () => {
+  const models = autoMix(2);
+  const resolved = resolveComposition({ scenes: [{ orientation: "rear_three_quarter_view" }] }, 2);
+  const s = select({ frames: 2, resolved });
+  const per = framePoseIds(s, resolved, 2);
+  assert.equal(per[1], null, "frame 2 has no requirements");
+  assert.ok(per[0]!.length > 0 && per[0]!.every((id) => compatible(catalog.poses.find((p) => p.id === id)!, resolved[0])));
+  const wrong = s.find((p) => !per[0]!.includes(p.id))!.id;
+  const opts = { models, poseIds: s.map((p) => p.id), framePoseIds: per };
+  assert.throws(() => validatePlan(withPoses([wrong, per[0]![0]]), opts), /does not fit this frame's composition requirements/);
+  validatePlan(withPoses([per[0]![0], wrong]), opts); // frame 2 accepts any listed id
+  validatePlan(withPoses([FREE_POSE, wrong]), opts);
+  validatePlan(withPoses([FREE_POSE, FREE_POSE]), { models, poseIds: [], framePoseIds: [[], null] }); // nothing fits: free only
+  // The request names the allowed ids per constrained frame, compactly (no repeated descriptions).
+  const text = posePrompt(s, catalog.version, per);
+  assert.ok(text.includes(`- Frame 1: ${per[0]!.join(", ")} or "free".`));
+  assert.ok(!text.includes("- Frame 2:"));
+  assert.equal(text.split(catalog.poses.find((p) => p.id === per[0]![0])!.description).length, 2, "description listed once");
+  assert.ok(posePrompt(s, catalog.version, [[], null]).includes(`- Frame 1: "free" only (no listed pose fits its requirements; keep the requested composition).`));
+});
+
+const house = (view: string) =>
+  ["realistic, masterpiece,", "solo female, adult woman, 30 years old, original character, mature face, adult body, huge breast,", "short dark bob,", "standing by the water,", "linen dress,", "lakeside path,", `${view}, soft daylight`].join("\n\n");
+const viewPlan = (...views: string[]) => ({ frames: views.map((v, i) => ({ frame: i + 1, positive: house(v), ...(i === 0 ? { poseId: "ND-P25" } : {}) })) });
+
+test("view history: final views from saved plans (catalog and free frames); unclear views are not guessed", () => {
+  assert.equal(frameDirection(house("rear three-quarter view, head-to-mid-thigh composition")), "rear");
+  assert.equal(frameDirection(house("front three-quarter view, waist-up composition")), "front");
+  assert.equal(frameDirection(house("right side profile, waist-up composition")), null, "not a phrase the extractor knows: no guess");
+  assert.equal(frameDirection(house("front view, side view")), null, "two directions: no guess");
+  assert.equal(frameDirection(42), null);
+  const h = viewHistory([
+    viewPlan("front view", "side view", "rear three-quarter view"),
+    viewPlan("front three-quarter view", "rear view"), // the rear final is a free frame (no poseId)
+    viewPlan("front view", "right side profile"), // unidentifiable final
+    { frames: [{ positive: house("rear view") }] }, // single frame: no order, skipped
+    "junk",
+  ]);
+  assert.deepEqual(h.sequences, [["front", "side", "rear"], ["front", "rear"], ["front", null]]);
+  assert.deepEqual(h.finals, { rear: 2, identified: 2, collections: 3 });
+  assert.equal(h.rearHeavy, true);
+  assert.equal(viewHistory([viewPlan("front view", "rear view"), viewPlan("front view", "side view"), viewPlan("rear view", "front view")]).rearHeavy, false);
+});
+
+test("view note: soft final-view hint from the seeded sample; skipped when the user set the last view; reproducible", () => {
+  const h = viewHistory([viewPlan("front view", "rear view"), viewPlan("side view", "rear three-quarter view")]);
+  const s = select({ seed: 3 });
+  const n = viewNote(h, s);
+  assert.match(n.text, /View order of recent collections/);
+  assert.match(n.text, /2 of the 2 recent collections .* ended on a rear view/);
+  assert.match(n.text, /A rear last frame is still right when the idea needs it/);
+  assert.ok(n.finalSuggestions.length > 0 && n.finalSuggestions.every((id) => s.some((p) => p.id === id && p.family !== "rear")));
+  assert.deepEqual(viewNote(h, select({ seed: 3 })), n, "same seed and history, same hint");
+  const userRear = viewNote(h, s, { orientation: "rear_three_quarter_view" });
+  assert.deepEqual(userRear.finalSuggestions, []);
+  assert.doesNotMatch(userRear.text, /ended on a rear view/);
+  assert.equal(viewNote(viewHistory([viewPlan("right side profile", "left side profile")]), s).text, "", "nothing readable: nothing said");
+});
+
+/** Fake Codex that obeys (or, with "bad", breaks) the per-frame list printed in the request. */
+const STRICT_CODEX = [
+  `const fs = require("node:fs");`,
+  `const [capture, planText, mode, ...args] = process.argv.slice(1);`,
+  `const schema = JSON.parse(fs.readFileSync(args[args.indexOf("--output-schema") + 1], "utf8"));`,
+  `const offered = schema.properties.collections.items.properties.frames.items.properties.poseId.enum.filter((x) => x !== "free");`,
+  `let request = "";`,
+  `process.stdin.setEncoding("utf8");`,
+  `process.stdin.on("data", (c) => (request += c));`,
+  `process.stdin.on("end", () => {`,
+  `  fs.appendFileSync(capture, JSON.stringify(request) + "\\n");`,
+  `  const line = request.split("\\n").find((l) => /^- Frame 1: (ND-P|"free")/.test(l)) || "";`,
+  `  const allowed = offered.filter((id) => line.includes(id));`,
+  `  const plan = JSON.parse(planText);`,
+  `  for (const c of plan.collections) c.frames.forEach((f, i) => {`,
+  `    f.poseId = i === 0 ? (mode === "bad" ? offered.find((id) => !allowed.includes(id)) : (allowed[0] || "free")) : offered[offered.length - 1];`,
+  `  });`,
+  `  fs.writeFileSync(args[args.indexOf("-o") + 1], JSON.stringify(plan));`,
+  `});`,
+].join("\n");
+
+for (const mode of ["good", "bad"] as const) {
+  test(`pipeline with composition (${mode}): per-frame ids reach Codex and validation; an incompatible pick never reaches ComfyUI`, async () => {
+    const box: { dir?: string } = {};
+    const plan = JSON.stringify({ collections: [planV3("Harbour Night", autoMix(2))] });
+    const e = await env({ plan: async (o) => generateBatch({ ...o, launcher: { command: process.execPath, args: ["-e", STRICT_CODEX, "--", join(box.dir!, "strict.jsonl"), plan, mode] }, timeoutMs: 10_000 }) });
+    box.dir = e.dir;
+    const dir = e.dir;
+    const capture = join(dir, "strict.jsonl");
+    const res = await e.app.inject({ method: "POST", url: "/api/autopilot/start", headers: H, payload: { frames: 2, poseSelection: "auto", composition: { scenes: [{ orientation: "rear_three_quarter_view" }] } } });
+    assert.equal(res.statusCode, 202);
+    await e.settle();
+    const b = await e.batch();
+    assert.equal(b.poseSelection.frames[1], null);
+    assert.ok(b.poseSelection.frames[0].length > 0);
+    const reqs = (await readFile(capture, "utf8")).trim().split("\n");
+    assert.equal(reqs.length, 1, "one Codex call, no retry");
+    if (mode === "bad") {
+      assert.equal(e.runner.state.status, "failed");
+      assert.match(e.runner.state.error!, /does not fit this frame's composition requirements/);
+      assert.equal(e.submits(), 0, "nothing reached ComfyUI");
+    } else {
+      assert.equal(e.runner.state.status, "completed", e.runner.state.error);
+      const id = (await readdir(dir)).find((n) => !n.startsWith("_") && !n.endsWith(".jsonl"))!;
+      const m = JSON.parse(await readFile(join(dir, id, "collection.json"), "utf8"));
+      assert.ok(b.poseSelection.frames[0].includes(m.frames[0].pose.id));
+      assert.equal(m.frames[0].pose.promptAsPlanned, true);
+    }
+    await e.app.close();
+  });
+}
+
+test("history in a run: recent rear endings (free frames included) become a soft hint and are recorded; free mode gets none", async () => {
+  const e = await env();
+  const fs = await import("node:fs/promises");
+  for (const [i, views] of [["front view", "rear three-quarter view"], ["side view", "rear view"]].entries()) {
+    const d = join(e.dir, `2026-01-0${i + 1}-old`);
+    await fs.mkdir(d, { recursive: true });
+    await writeFile(join(d, "collection.json"), JSON.stringify({ title: `Old ${i}`, createdAt: `2026-01-0${i + 1}T00:00:00Z`, status: "done", dir: d, frames: [], frameCount: 2 }));
+    const p = planV3(`Old ${i}`, autoMix(2));
+    p.frames.forEach((f, j) => (f.positive = house(views[j])));
+    await writeFile(join(d, "prompt-plan.json"), JSON.stringify(p));
+  }
+  await e.app.inject({ method: "POST", url: "/api/autopilot/start", headers: H, payload: { frames: 2, poseSelection: "auto" } });
+  await e.settle();
+  const views = (await e.batch()).poseSelection.views;
+  assert.equal(views.rearHeavy, true);
+  assert.deepEqual(views.finals, { rear: 2, identified: 2, collections: 2 });
+  assert.ok(views.finalSuggestions.length > 0);
+  const [auto] = await e.requests();
+  assert.match(auto, /ended on a rear view/);
+  for (const id of views.finalSuggestions) assert.ok(auto.includes(id));
+  await e.app.close();
+
+  const f = await env();
+  await f.app.inject({ method: "POST", url: "/api/autopilot/start", headers: H, payload: { frames: 2 } });
+  await f.settle();
+  const [free] = await f.requests();
+  assert.doesNotMatch(free, /View order of recent collections|ended on a rear view/);
+  await f.app.close();
 });

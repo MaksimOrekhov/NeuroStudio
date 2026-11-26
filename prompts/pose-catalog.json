@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "note": "NeuroStudio Pose Catalog v1 (NS-026). Original descriptions; no AI Pose Gallery data. views/crops/poses use the composition option ids of src/composition.ts. IDs are stable: never renumber or reuse them.",
+  "note": "NeuroStudio Pose Catalog v1 (NS-026). Original descriptions; no AI Pose Gallery data. anchor: none = no prop, seat = an ordinary seat or lying surface (chair, bench, ground, sofa, bed), object = a specific object or architectural element (wall, rail, table, ledge, step, doorway). views/crops/poses use the composition option ids of src/composition.ts. IDs are stable: never renumber or reuse them.",
   "poses": [
     {
-      "id": "ND-P01", "family": "leaning", "nameRu": "Предплечье на подоконнике",
+      "id": "ND-P01", "family": "leaning", "anchor": "object", "nameRu": "Предплечье на подоконнике",
       "description": "One forearm along a window ledge.",
       "body": "Standing, shoulders at an easy diagonal.",
       "hands": "Near forearm lies along the ledge; far arm hangs loosely.",
@@ -16,7 +16,7 @@
       "risks": "Keep the resting wrist in line with the forearm."
     },
     {
-      "id": "ND-P02", "family": "seated", "nameRu": "Сидит прямо, ладони на бёдрах",
+      "id": "ND-P02", "family": "seated", "anchor": "seat", "nameRu": "Сидит прямо, ладони на бёдрах",
       "description": "Seated upright with palms on separate thighs.",
       "body": "Upright on a low stool or chair, shoulders level.",
       "hands": "One relaxed palm on each thigh, fingers together.",
@@ -29,7 +29,7 @@
       "risks": "Keep each hand over its own thigh; show shoes only in full body."
     },
     {
-      "id": "ND-P03", "family": "leaning", "nameRu": "Плечом к стене",
+      "id": "ND-P03", "family": "leaning", "anchor": "object", "nameRu": "Плечом к стене",
       "description": "A shoulder against the wall, face turned toward the light.",
       "body": "Standing at a slight diagonal, upper arm touching the wall.",
       "hands": "Arms hang; the wall-side hand may fall outside the composition.",
@@ -42,7 +42,7 @@
       "risks": "Keep the wall-side shoulder at its natural height."
     },
     {
-      "id": "ND-P04", "family": "seated", "nameRu": "Предплечья на столе",
+      "id": "ND-P04", "family": "seated", "anchor": "object", "nameRu": "Предплечья на столе",
       "description": "Leaning toward a table on two parallel forearms.",
       "body": "Sitting, torso inclined from the hips.",
       "hands": "Forearms lie parallel on the tabletop, hands visibly apart.",
@@ -55,7 +55,7 @@
       "risks": "Keep the table edge clear of the wrists."
     },
     {
-      "id": "ND-P05", "family": "rear", "nameRu": "Оглядывается от перил",
+      "id": "ND-P05", "family": "rear", "anchor": "object", "nameRu": "Оглядывается от перил",
       "description": "Turning back from a balcony rail.",
       "body": "Hips face the rail; shoulders and head turn partway back.",
       "hands": "Near palm sits flat on the rail; far arm stays low.",
@@ -68,7 +68,7 @@
       "risks": "Show the supporting elbow and keep the turn of the spine small."
     },
     {
-      "id": "ND-P06", "family": "standing", "nameRu": "Рука на спинке стула",
+      "id": "ND-P06", "family": "standing", "anchor": "object", "nameRu": "Рука на спинке стула",
       "description": "A hand on a chair back, shoulders square.",
       "body": "Standing next to the chair with the torso upright.",
       "hands": "Near palm lies on top of the chair back without gripping; far arm hangs.",
@@ -81,7 +81,7 @@
       "risks": "Avoid wrapping the palm behind the chair edge."
     },
     {
-      "id": "ND-P07", "family": "seated", "nameRu": "Боком на стуле",
+      "id": "ND-P07", "family": "seated", "anchor": "seat", "nameRu": "Боком на стуле",
       "description": "Seated sideways with one forearm on the chair back.",
       "body": "Pelvis square to the seat; chest opens toward the viewer.",
       "hands": "Near forearm follows the top of the backrest; free hand on the near thigh.",
@@ -94,7 +94,7 @@
       "risks": "Separate the free elbow from the chair silhouette."
     },
     {
-      "id": "ND-P08", "family": "walking", "nameRu": "Спокойный шаг",
+      "id": "ND-P08", "family": "walking", "anchor": "none", "nameRu": "Спокойный шаг",
       "description": "A quiet stroll with one foot just landing.",
       "body": "Tall torso in an easy walking stride.",
       "hands": "Arms swing only slightly, hands below the hips.",
@@ -107,7 +107,7 @@
       "risks": "Keep the stride short and the near and far legs in order."
     },
     {
-      "id": "ND-P09", "family": "standing", "nameRu": "Пальцы на странице книги",
+      "id": "ND-P09", "family": "standing", "anchor": "object", "nameRu": "Пальцы на странице книги",
       "description": "Fingertips on the pages of an open book on a stand.",
       "body": "Standing with a small forward nod toward the book.",
       "hands": "Near fingertips rest on an open page; the other arm hangs.",
@@ -120,7 +120,7 @@
       "risks": "Place the fingertips on the page surface with the book edge clear."
     },
     {
-      "id": "ND-P10", "family": "portrait", "nameRu": "Спокойный фронтальный портрет",
+      "id": "ND-P10", "family": "portrait", "anchor": "none", "nameRu": "Спокойный фронтальный портрет",
       "description": "A quiet straight-on portrait with relaxed shoulders.",
       "body": "Head centered over an upright trunk, chin slightly lowered.",
       "hands": "Arms stay below the composition.",
@@ -132,7 +132,7 @@
       "risks": "End the composition clearly above the elbows; keep the neck visible."
     },
     {
-      "id": "ND-P11", "family": "seated", "nameRu": "Сидит у окна в профиль",
+      "id": "ND-P11", "family": "seated", "anchor": "object", "nameRu": "Сидит у окна в профиль",
       "description": "Sitting by a window with the torso in profile and elbows low.",
       "body": "Sitting upright, eyes toward the window.",
       "hands": "Window-side forearm rests on the sill; the free arm lies on the lap.",
@@ -145,7 +145,7 @@
       "risks": "Keep the sill below the shoulder."
     },
     {
-      "id": "ND-P12", "family": "leaning", "nameRu": "Бедром к столешнице",
+      "id": "ND-P12", "family": "leaning", "anchor": "object", "nameRu": "Бедром к столешнице",
       "description": "Resting a hip lightly against a counter edge.",
       "body": "Standing with a small side shift toward the counter.",
       "hands": "Near hand flat on the counter; far arm hangs beside the hip.",
@@ -158,7 +158,7 @@
       "risks": "Keep the pelvis almost level; leave daylight between the far elbow and the torso."
     },
     {
-      "id": "ND-P13", "family": "portrait", "nameRu": "Почти профиль, длинная шея",
+      "id": "ND-P13", "family": "portrait", "anchor": "none", "nameRu": "Почти профиль, длинная шея",
       "description": "Face just past profile with a long, relaxed neck.",
       "body": "Shoulders angled away, head turning back to near profile.",
       "hands": "Arms lowered, below the composition.",
@@ -170,7 +170,7 @@
       "risks": "Show a clean jawline and leave room above the near shoulder."
     },
     {
-      "id": "ND-P14", "family": "seated", "nameRu": "Ладонь на краю сиденья",
+      "id": "ND-P14", "family": "seated", "anchor": "seat", "nameRu": "Ладонь на краю сиденья",
       "description": "Sitting with one palm on the seat edge.",
       "body": "Sitting, upper body inclined a little toward the braced arm.",
       "hands": "Near palm flat beside the hip; far hand flat on its thigh.",
@@ -183,7 +183,7 @@
       "risks": "Keep the fingers on the seat surface so they do not merge with its edge."
     },
     {
-      "id": "ND-P15", "family": "portrait", "nameRu": "Ладонь у ключицы",
+      "id": "ND-P15", "family": "portrait", "anchor": "none", "nameRu": "Ладонь у ключицы",
       "description": "One hand resting lightly against the upper chest.",
       "body": "Torso upright with a small turn toward the raised arm.",
       "hands": "Near palm over the collarbone, fingers aligned; far arm hangs.",
@@ -195,7 +195,7 @@
       "risks": "Keep the fingertips clear of any necklace and preserve the wrist contour."
     },
     {
-      "id": "ND-P16", "family": "seated", "nameRu": "Сидит на широкой ступени",
+      "id": "ND-P16", "family": "seated", "anchor": "object", "nameRu": "Сидит на широкой ступени",
       "description": "Perched on a wide step, one knee higher.",
       "body": "Seated with a straight back, hips centered on the step.",
       "hands": "Near palm on the higher thigh; the other palm on the step beside her.",
@@ -208,7 +208,7 @@
       "risks": "Give both knees clear silhouettes; include the soles in full body."
     },
     {
-      "id": "ND-P17", "family": "standing", "nameRu": "У стола с картой",
+      "id": "ND-P17", "family": "standing", "anchor": "object", "nameRu": "У стола с картой",
       "description": "A slight turn toward a map spread on a table.",
       "body": "Standing; ribcage and hips turn together toward the table.",
       "hands": "Near forearm lies beside the map; the free hand hangs by the hip.",
@@ -221,7 +221,7 @@
       "risks": "Keep the forearm visibly beside the map so it does not read as gripping."
     },
     {
-      "id": "ND-P18", "family": "portrait", "nameRu": "Взгляд вниз, вид чуть сверху",
+      "id": "ND-P18", "family": "portrait", "anchor": "seat", "nameRu": "Взгляд вниз, вид чуть сверху",
       "description": "Looking down past a relaxed shoulder, seen from slightly above.",
       "body": "Seated; head inclines forward while the shoulders stay level.",
       "hands": "Hands stay low, flat on either side of the lap.",
@@ -233,7 +233,7 @@
       "risks": "Keep the elevation mild to limit foreshortening of the neck."
     },
     {
-      "id": "ND-P19", "family": "leaning", "nameRu": "Предплечье на дверном косяке",
+      "id": "ND-P19", "family": "leaning", "anchor": "object", "nameRu": "Предплечье на дверном косяке",
       "description": "Beside a doorway with one forearm braced low.",
       "body": "Torso opens away from the doorway; the head follows.",
       "hands": "Near forearm leans on the jamb below shoulder height; the other arm down.",
@@ -246,7 +246,7 @@
       "risks": "Keep the elbow and the jamb as separate edges."
     },
     {
-      "id": "ND-P20", "family": "seated", "nameRu": "В кресле, руки на подлокотниках",
+      "id": "ND-P20", "family": "seated", "anchor": "seat", "nameRu": "В кресле, руки на подлокотниках",
       "description": "Sitting at an angle with both forearms on armrests.",
       "body": "Pelvis centered, shoulders gently turned toward the light.",
       "hands": "Forearms lie on separate armrests, hands relaxed over their ends.",
@@ -259,7 +259,7 @@
       "risks": "Keep the armrest ends away from the fingertips."
     },
     {
-      "id": "ND-P21", "family": "standing", "nameRu": "На лестничной площадке у перил",
+      "id": "ND-P21", "family": "standing", "anchor": "object", "nameRu": "На лестничной площадке у перил",
       "description": "A pause on a stair landing with one hand on a broad rail.",
       "body": "Torso upright, about to turn toward the stairs.",
       "hands": "Near hand flat on the broad rail; far arm loose at her side.",
@@ -272,7 +272,7 @@
       "risks": "Show the rail running under the palm; keep the wrist rotation small."
     },
     {
-      "id": "ND-P22", "family": "standing", "nameRu": "Лёгкий наклон, ладони на бёдрах",
+      "id": "ND-P22", "family": "standing", "anchor": "none", "nameRu": "Лёгкий наклон, ладони на бёдрах",
       "description": "A small hinge from the hips to study something below eye level.",
       "body": "Small forward hinge, long back, head in line with the trunk.",
       "hands": "Palms on the tops of separate thighs.",
@@ -285,7 +285,7 @@
       "risks": "Keep the hands high enough to stay inside a mid-thigh composition."
     },
     {
-      "id": "ND-P23", "family": "portrait", "nameRu": "Портрет, лицо чуть приподнято",
+      "id": "ND-P23", "family": "portrait", "anchor": "seat", "nameRu": "Портрет, лицо чуть приподнято",
       "description": "A gently lifted face in a still, centered portrait.",
       "body": "Seated, chin gently raised, upper body facing ahead.",
       "hands": "Forearms rest on the thighs, below the composition.",
@@ -297,7 +297,7 @@
       "risks": "Keep the lift slight so the nose and jaw remain distinct."
     },
     {
-      "id": "ND-P24", "family": "seated", "nameRu": "Локоть на столе, ладонь у лица",
+      "id": "ND-P24", "family": "seated", "anchor": "object", "nameRu": "Локоть на столе, ладонь у лица",
       "description": "One elbow on a table, open hand beside the face.",
       "body": "Seated, torso inclined gently toward the planted elbow.",
       "hands": "Near elbow on the table with the forearm upright, open hand beside the cheek; far hand stays low.",
@@ -310,7 +310,7 @@
       "risks": "Leave a visible gap between the fingers and the face; show the elbow contact."
     },
     {
-      "id": "ND-P25", "family": "standing", "nameRu": "Контрапост, рука на бедре",
+      "id": "ND-P25", "family": "standing", "anchor": "none", "nameRu": "Контрапост, рука на бедре",
       "description": "A relaxed contrapposto with one hand on the hip.",
       "body": "Standing with the weight on one leg; hips and shoulders at gentle opposite angles.",
       "hands": "One hand on the hip with the elbow out; the other arm hangs loosely with soft fingers.",
@@ -323,7 +323,7 @@
       "risks": "Keep the hand on the hip flat with the fingers together; leave a clear gap between the bent elbow and the waist."
     },
     {
-      "id": "ND-P26", "family": "rear", "nameRu": "Взгляд через плечо, вид сзади",
+      "id": "ND-P26", "family": "rear", "anchor": "none", "nameRu": "Взгляд через плечо, вид сзади",
       "description": "Looking back over the shoulder from a rear three-quarter view.",
       "body": "Back half turned to the viewer; the head turns toward the viewer over the near shoulder.",
       "hands": "Near arm hangs relaxed along the side; the far hand rests on the hip.",
@@ -336,7 +336,7 @@
       "risks": "Keep the head turn moderate so the jaw and neck stay natural; the far hand may be partly hidden by the body."
     },
     {
-      "id": "ND-P27", "family": "standing", "nameRu": "Стоит свободно, руки опущены",
+      "id": "ND-P27", "family": "standing", "anchor": "none", "nameRu": "Стоит свободно, руки опущены",
       "description": "Standing tall with relaxed arms and a slight turn of the shoulders.",
       "body": "Upright; the shoulders turn slightly from the hips.",
       "hands": "Both arms hang naturally, hands relaxed a little away from the thighs.",
@@ -349,7 +349,7 @@
       "risks": "Keep the hands slightly away from the hips so both silhouettes read."
     },
     {
-      "id": "ND-P28", "family": "standing", "nameRu": "Профиль, рука держит запястье",
+      "id": "ND-P28", "family": "standing", "anchor": "none", "nameRu": "Профиль, рука держит запястье",
       "description": "A calm profile with one hand lightly holding the other wrist.",
       "body": "Standing in profile, long back, chin level.",
       "hands": "Hands meet in front of the hips, one hand lightly holding the other wrist.",
@@ -362,7 +362,7 @@
       "risks": "Show the holding hand clearly; avoid interlaced fingers."
     },
     {
-      "id": "ND-P29", "family": "walking", "nameRu": "Идёт навстречу",
+      "id": "ND-P29", "family": "walking", "anchor": "none", "nameRu": "Идёт навстречу",
       "description": "An unhurried walk toward the viewer.",
       "body": "Upright torso, relaxed shoulders, gaze ahead or toward the viewer.",
       "hands": "Arms swing only slightly, close to the body.",
@@ -375,7 +375,7 @@
       "risks": "Keep the stride short so both legs stay readable and distinct."
     },
     {
-      "id": "ND-P30", "family": "walking", "nameRu": "Уходит и оглядывается",
+      "id": "ND-P30", "family": "walking", "anchor": "none", "nameRu": "Уходит и оглядывается",
       "description": "Walking away and glancing back.",
       "body": "Back to the viewer, head turned partway back over one shoulder.",
       "hands": "Arms relaxed with a slight swing.",
@@ -388,7 +388,7 @@
       "risks": "Keep the head turn moderate; both feet should read as walking away."
     },
     {
-      "id": "ND-P31", "family": "portrait", "nameRu": "Портрет через плечо",
+      "id": "ND-P31", "family": "portrait", "anchor": "none", "nameRu": "Портрет через плечо",
       "description": "An over-the-shoulder portrait.",
       "body": "Back and near shoulder toward the viewer, face turned back in three-quarter.",
       "hands": "Hands stay below the shoulder line, mostly outside the composition.",
@@ -400,7 +400,7 @@
       "risks": "Keep the near shoulder lower than the chin so the neck stays long."
     },
     {
-      "id": "ND-P32", "family": "standing", "nameRu": "Руки свободно скрещены",
+      "id": "ND-P32", "family": "standing", "anchor": "none", "nameRu": "Руки свободно скрещены",
       "description": "Arms loosely folded below the chest.",
       "body": "Standing upright, shoulders relaxed, a slight turn toward the light.",
       "hands": "Forearms folded loosely, each hand resting on the opposite upper arm.",
@@ -413,7 +413,7 @@
       "risks": "Keep the fold loose so both hands stay visible on the upper arms."
     },
     {
-      "id": "ND-P33", "family": "seated", "nameRu": "Сидит боком на земле",
+      "id": "ND-P33", "family": "seated", "anchor": "seat", "nameRu": "Сидит боком на земле",
       "description": "Sitting sideways on the ground with the legs folded to one side.",
       "body": "Upright torso turned toward the viewer, hips on a blanket, rug or lawn.",
       "hands": "One palm flat on the ground beside the hip; the other hand on the upper thigh.",
@@ -426,7 +426,7 @@
       "risks": "Keep both lower legs together and fully visible on one side; the supporting arm stays straight."
     },
     {
-      "id": "ND-P34", "family": "reclining", "nameRu": "Лежит на боку, опора на предплечье",
+      "id": "ND-P34", "family": "reclining", "anchor": "seat", "nameRu": "Лежит на боку, опора на предплечье",
       "description": "Lying on one side, propped on a forearm.",
       "body": "Upper body raised on the forearm, head level, torso facing the viewer.",
       "hands": "Supporting forearm flat under the shoulder; the free hand lies on the hip.",
@@ -439,7 +439,7 @@
       "risks": "Keep the supporting shoulder above the elbow; the stacked legs must stay two separate shapes."
     },
     {
-      "id": "ND-P35", "family": "reclining", "nameRu": "Полулёжа на подушках",
+      "id": "ND-P35", "family": "reclining", "anchor": "seat", "nameRu": "Полулёжа на подушках",
       "description": "Half reclining against cushions on a chaise or sofa.",
       "body": "Back resting on cushions, upper body raised, chin level.",
       "hands": "Arms rest along the body; one hand on the cushion, the other on the lap.",
@@ -452,7 +452,7 @@
       "risks": "Show the backrest clearly so the incline reads as supported."
     },
     {
-      "id": "ND-P36", "family": "seated", "nameRu": "Сидит, руки сложены на коленях",
+      "id": "ND-P36", "family": "seated", "anchor": "seat", "nameRu": "Сидит, руки сложены на коленях",
       "description": "Sitting at a three-quarter angle with the hands at rest on the lap.",
       "body": "Upright on a chair or bench, shoulders relaxed.",
       "hands": "One hand lies over the other on the lap.",
@@ -465,7 +465,7 @@
       "risks": "Keep both hands readable as two shapes, the upper one relaxed."
     },
     {
-      "id": "ND-P37", "family": "standing", "nameRu": "Руки в карманах",
+      "id": "ND-P37", "family": "standing", "anchor": "none", "nameRu": "Руки в карманах",
       "description": "Standing with both hands in the pockets of a coat, jacket or trousers.",
       "body": "Upright, shoulders relaxed, a slight turn from the hips.",
       "hands": "Both hands inside the pockets up to the wrists.",

@@ -16,9 +16,18 @@ export type PoseMode = (typeof POSE_MODES)[number];
 export const POSE_FAMILIES = ["standing", "leaning", "walking", "seated", "reclining", "portrait", "rear"] as const;
 export type PoseFamily = (typeof POSE_FAMILIES)[number];
 
+/**
+ * What the pose needs from its surroundings, set by hand per entry (never guessed from the wording):
+ * none = nothing; seat = an ordinary seat or lying surface (chair, bench, ground, sofa, bed);
+ * object = a specific object or architectural element (wall, rail, table, ledge, step, doorway).
+ */
+export const POSE_ANCHORS = ["none", "seat", "object"] as const;
+export type PoseAnchor = (typeof POSE_ANCHORS)[number];
+
 export interface PoseEntry {
   id: string;
   family: PoseFamily;
+  anchor: PoseAnchor;
   /** Short Russian name shown in the UI (never the id). */
   nameRu: string;
   description: string;
@@ -41,11 +50,15 @@ export interface PoseCatalog {
   poses: PoseEntry[];
 }
 
-/** Pose fact of one generated image (FrameRecord and its sidecar). `verified: false` = the prompt was edited, so the image may no longer show this pose. */
+/**
+ * The PLANNED pose of one image (FrameRecord and its sidecar): the catalog pose Codex built the frame's prompt on. It is not proof that
+ * the rendered PNG shows that pose; nothing checks the image. promptAsPlanned=false: the prompt was edited after planning, so even the
+ * prompt may no longer describe this pose (kept for provenance, left out of pose statistics).
+ */
 export interface FramePose {
   id: string;
   catalogVersion: number;
-  verified: boolean;
+  promptAsPlanned: boolean;
 }
 
 /** What a run in auto mode offered Codex (batch-plan.json), for diagnosis. */
@@ -59,6 +72,10 @@ export interface PoseSelection {
   recent: Record<string, number>;
   /** True when Preference Memory reports stable anatomy problems: moderate poses get a lower priority. */
   cautious: boolean;
+  /** Per frame (index 0 = frame 1): ids allowed by that frame's explicit composition; null = no requirements, any listed id. */
+  frames: (string[] | null)[];
+  /** View history of recent collections and the soft hint derived from it (see server/poseHistory.ts). */
+  views?: unknown;
 }
 
 export class PoseError extends Error {}
@@ -83,6 +100,7 @@ export function catalogProblems(c: unknown): string[] {
     else if (ids.has(p.id)) errs.push(`${at}: duplicate id`);
     else ids.add(p.id);
     if (!(POSE_FAMILIES as readonly string[]).includes(p?.family)) errs.push(`${at}: unknown family`);
+    if (!(POSE_ANCHORS as readonly string[]).includes(p?.anchor)) errs.push(`${at}: anchor must be one of ${POSE_ANCHORS.join(", ")}`);
     if (p?.difficulty !== "easy" && p?.difficulty !== "moderate") errs.push(`${at}: difficulty must be easy or moderate`);
     for (const k of ["nameRu", "description", "body", "hands", "support", "risks"]) if (!field(o, k)) errs.push(`${at}: ${k} missing`);
     if (o.legs !== undefined && !field(o, "legs")) errs.push(`${at}: legs must be a non-empty string when present`);
@@ -173,20 +191,20 @@ export const sampleSize = (frames: number, collections: number) => Math.min(SAMP
 /**
  * The compact, reproducible sample for one Codex request (same inputs and seed = same sample, same order).
  * Weighted random order (Efraimidis-Spirakis keys): recent use and, when cautious, moderate difficulty only LOWER a pose's chance;
- * nothing is banned. Every constrained frame first gets up to PER_SCENE compatible poses; poses compatible with no frame are left
- * out. The rest is filled family by family (at most a quarter of the sample per family before the cap is relaxed), so a free theme
- * receives standing, seated, walking, portrait, rear and reclining options rather than one family.
+ * nothing is banned. Every constrained frame first gets up to PER_SCENE compatible poses (explicit requirements win over every
+ * diversity rule below); poses compatible with no frame are left out. The rest is filled greedily: the best key wins, boosted when
+ * the pose adds a view direction (front / side / rear) or a shot-size range (close / middle / long) the sample does not cover yet,
+ * with soft caps of a quarter of the sample per family and a third for poses that need a specific object (wall, rail, table...).
+ * The caps are relaxed only when the sample cannot be filled otherwise.
  */
 export function selectPoses(o: SelectOptions): PoseEntry[] {
   const scenes = Array.from({ length: o.frames }, (_, i) => o.resolved[i] ?? {});
   const size = sampleSize(o.frames, o.collections);
   const weight = (p: PoseEntry) => (p.difficulty === "moderate" ? (o.cautious ? 0.4 : 0.75) : 1) / (1 + RECENT_FACTOR * (o.recent?.[p.id] ?? 0));
-  const key = (p: PoseEntry) => rand(o.seed, p.id) ** (1 / weight(p));
+  const keys = new Map(o.catalog.poses.map((p) => [p.id, rand(o.seed, p.id) ** (1 / weight(p))]));
   const ranked = o.catalog.poses
     .filter((p) => scenes.some((s) => compatible(p, s)))
-    .map((p) => ({ p, k: key(p) }))
-    .sort((a, b) => b.k - a.k || a.p.id.localeCompare(b.p.id))
-    .map((x) => x.p);
+    .sort((a, b) => keys.get(b.id)! - keys.get(a.id)! || a.id.localeCompare(b.id));
   const picked: PoseEntry[] = [];
   for (const s of scenes) {
     if (!constrained(s)) continue;
@@ -195,14 +213,47 @@ export function selectPoses(o: SelectOptions): PoseEntry[] {
       if (compatible(p, s) && !picked.includes(p)) picked.push(p);
     }
   }
-  const cap = Math.max(2, Math.ceil(size / 4));
-  for (const limit of [cap, Infinity]) {
-    for (const p of ranked) {
-      if (picked.length >= size) break;
-      if (!picked.includes(p) && picked.filter((x) => x.family === p.family).length < limit) picked.push(p);
+  const familyCap = Math.max(2, Math.ceil(size / 4));
+  const objectCap = Math.ceil(size / 3);
+  const covered = (f: (p: PoseEntry) => string[]) => new Set(picked.flatMap(f));
+  for (const [famLimit, objLimit] of [[familyCap, objectCap], [Infinity, objectCap], [Infinity, Infinity]]) {
+    while (picked.length < size) {
+      const views = covered(viewGroups);
+      const crops = covered(cropGroups);
+      let best: PoseEntry | undefined;
+      let bestScore = -1;
+      for (const p of ranked) {
+        if (picked.includes(p)) continue;
+        if (picked.filter((x) => x.family === p.family).length >= famLimit) continue;
+        if (p.anchor === "object" && picked.filter((x) => x.anchor === "object").length >= objLimit) continue;
+        const score = keys.get(p.id)! * (viewGroups(p).some((g) => !views.has(g)) ? 1.5 : 1) * (cropGroups(p).some((g) => !crops.has(g)) ? 1.25 : 1);
+        if (score > bestScore) [best, bestScore] = [p, score];
+      }
+      if (!best) break;
+      picked.push(best);
     }
   }
   return picked;
+}
+
+/** Coarse view direction of a composition orientation id. */
+export function viewGroup(orientation: string): "front" | "side" | "rear" {
+  if (/side_profile/.test(orientation)) return "side";
+  if (/rear|over_the_shoulder|turned_away/.test(orientation)) return "rear";
+  return "front";
+}
+const viewGroups = (p: PoseEntry) => [...new Set(p.views.map(viewGroup))];
+const cropGroups = (p: PoseEntry) => [...new Set(p.crops.map((c) => (/face|head_and|chest/.test(c) ? "close" : /waist|mid_thigh/.test(c) ? "middle" : "long")))];
+
+/**
+ * Per frame (index 0 = frame 1): the listed ids that fit THAT frame's explicit composition requirements, or null when the frame has
+ * no requirements (any listed id fits). [] = nothing listed fits: the frame must use FREE_POSE and keep the requested composition.
+ */
+export function framePoseIds(sample: readonly PoseEntry[], resolved: Resolved, frames: number): (string[] | null)[] {
+  return Array.from({ length: frames }, (_, i) => {
+    const req = resolved[i] ?? {};
+    return constrained(req) ? sample.filter((p) => compatible(p, req)).map((p) => p.id) : null;
+  });
 }
 
 const label = (group: "orientation" | "framing", id: string) => (COMPOSITION_OPTIONS[group].find((x) => x.id === id)?.label ?? id).toLowerCase();
@@ -225,8 +276,11 @@ export function codexText(p: PoseEntry): string {
 /** Hard cap on the pose block in the Codex request (characters). */
 export const POSE_PROMPT_MAX = 8000;
 
-/** The block appended to the single planning request in auto mode. */
-export function posePrompt(sample: readonly PoseEntry[], version: number): string {
+/**
+ * The block appended to the single planning request in auto mode. `frames` (from framePoseIds) adds one short line per frame that
+ * has explicit requirements, listing only ids; `note` is the soft view-history hint (server/poseHistory.ts). Both go after the list.
+ */
+export function posePrompt(sample: readonly PoseEntry[], version: number, frames: readonly (readonly string[] | null)[] = [], note = ""): string {
   if (!sample.length) return "";
   const head = `Pose library (NeuroStudio catalog v${version}; an optional helper, not a template). For EVERY frame set "poseId": the id of the ONE listed pose you build that frame on, or "${FREE_POSE}" when none of them fits the frame naturally (then invent a simple pose yourself). Never use an id that is not listed below.
 Priorities: the hard constraints, then the user's theme and composition requirements, then relevant feedback from the preference notes (if any), then this library, then your own taste. Never change the concept, the place or the outfit just to use a listed pose.
@@ -241,6 +295,14 @@ Priorities: the hard constraints, then the user's theme and composition requirem
     if (text.length + l.length + 1 > POSE_PROMPT_MAX) break;
     text += `\n${l}`;
   }
+  const listed = new Set(sample.filter((p) => text.includes(`\n- ${p.id}: `)).map((p) => p.id));
+  const perFrame = frames.flatMap((ids, i) => {
+    if (ids === null) return [];
+    const fit = ids.filter((id) => listed.has(id));
+    return [`- Frame ${i + 1}: ${fit.length ? `${fit.join(", ")} or "${FREE_POSE}"` : `"${FREE_POSE}" only (no listed pose fits its requirements; keep the requested composition)`}.`];
+  });
+  if (perFrame.length) text += `\nFrames with composition requirements accept only these ids (any listed id fits the other frames):\n${perFrame.join("\n")}`;
+  if (note) text += `\n${note}`;
   return text;
 }
 
@@ -270,12 +332,12 @@ export function anatomyCaution(memory?: { negative?: ReadonlyArray<{ tag: string
 /** The pose of the frames built from a plan frame: none when the plan has no poseId (free mode, older plans). */
 export function framePose(poseId: string | undefined, catalogVersion: number | undefined): FramePose | undefined {
   if (typeof poseId !== "string" || catalogVersion === undefined) return undefined;
-  return { id: poseId, catalogVersion, verified: true };
+  return { id: poseId, catalogVersion, promptAsPlanned: true };
 }
 
 /** A pose record read from disk (sidecar / manifest), or undefined when absent or malformed. Never throws. */
 export function readFramePose(x: unknown): FramePose | undefined {
   const p = x as FramePose;
-  if (!p || typeof p !== "object" || typeof p.id !== "string" || !p.id || !Number.isInteger(p.catalogVersion) || typeof p.verified !== "boolean") return undefined;
-  return { id: p.id, catalogVersion: p.catalogVersion, verified: p.verified };
+  if (!p || typeof p !== "object" || typeof p.id !== "string" || !p.id || !Number.isInteger(p.catalogVersion) || typeof p.promptAsPlanned !== "boolean") return undefined;
+  return { id: p.id, catalogVersion: p.catalogVersion, promptAsPlanned: p.promptAsPlanned };
 }

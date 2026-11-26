@@ -74,7 +74,7 @@ export interface FrameRecord {
   sourceVariant?: number;
   /** NS-017: true when the positive prompt was edited before regenerating (absent otherwise). */
   promptEdited?: boolean;
-  /** NS-026: the pose this image was planned with (auto pose mode only). verified=false after a prompt edit. */
+  /** NS-026: the pose this image's prompt was PLANNED with (auto pose mode only); not a check of the image. promptAsPlanned=false after a prompt edit. */
   pose?: FramePose;
 }
 

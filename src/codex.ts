@@ -4,10 +4,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import type { CodexSelection } from "./codexModels.ts";
-import { compositionPrompt, type Composition } from "./composition.ts";
+import { compositionPrompt, resolveComposition, type Composition } from "./composition.ts";
 import { MAX_FRAMES, MODEL_IDS, autoMix } from "./imageModels.ts";
 import { FREE_POSE, validateBatch, validatePlan, type PromptPlan } from "./promptPlan.ts";
-import { listedIds, posePrompt, type PoseEntry } from "./poses.ts";
+import { framePoseIds, listedIds, posePrompt, type PoseEntry } from "./poses.ts";
 
 export class CodexError extends Error {}
 
@@ -136,7 +136,7 @@ export interface BatchOptions extends CodexOptions {
   /** NS-023: compact visual memory of recent collections (see visualHistory.ts). Absent/empty = the request is exactly as before. */
   history?: string;
   /** NS-026 auto pose mode: the catalog sample for this request. Absent = free mode: request, schema and validation exactly as before. */
-  poses?: { catalogVersion: number; sample: readonly PoseEntry[] };
+  poses?: { catalogVersion: number; sample: readonly PoseEntry[]; /** Soft view-history hint (server/poseHistory.ts). */ note?: string };
 }
 
 /** Arguments for `codex exec` (no shell). An explicit model beats CODEX_MODEL; Default adds no override at all. */
@@ -234,9 +234,12 @@ export async function generateBatch(opts: BatchOptions): Promise<BatchResult> {
   const instructions = await loadInstructions();
   const lib = opts.poses?.sample.length ? opts.poses : undefined;
   const poseIds = lib ? listedIds(lib.sample, lib.catalogVersion) : undefined;
-  const poseText = lib ? posePrompt(lib.sample, lib.catalogVersion) : "";
+  // Each frame may only use ids that fit ITS explicit composition requirements (null = no requirements).
+  const listed = lib ? lib.sample.filter((p) => poseIds!.includes(p.id)) : [];
+  const perFrame = lib ? framePoseIds(listed, resolveComposition(opts.composition, models.length), models.length) : undefined;
+  const poseText = lib ? posePrompt(lib.sample, lib.catalogVersion, perFrame, lib.note) : "";
   const r = await runCodex(planPrompt(instructions, opts.theme, opts.avoid, opts.count, opts.composition, models, true, opts.preferences, opts.history, poseText), await batchSchema(opts.count, SCHEMA, models, poseIds), timeout(opts, opts.count), opts.launcher, selection(opts));
-  return { plans: validateBatch(r.json, opts.count, { models, ...(poseIds ? { poseIds } : {}) }), raw: r.raw, ms: r.ms, tokens: r.tokens };
+  return { plans: validateBatch(r.json, opts.count, { models, ...(poseIds ? { poseIds, framePoseIds: perFrame } : {}) }), raw: r.raw, ms: r.ms, tokens: r.tokens };
 }
 
 /** Reads token usage from `codex exec --json` events (turn.completed). */

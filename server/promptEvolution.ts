@@ -196,7 +196,7 @@ export interface PreferenceMemory {
   features: FeatureStat[];
   /**
    * NS-026: feedback per catalog pose, for later analysis only. It is never sent to Codex and never ranks or bans a pose. Only images
-   * whose pose link is verified count (an edited prompt is excluded). Problems are kept apart: hands, legs, body (pose/proportions/
+   * whose prompt is still the planned one count (an edited prompt is excluded); this is the planned pose, never a check of the image. Problems are kept apart: hands, legs, body (pose/proportions/
    * anatomy), angle and composition; likes, dislikes, Best and Arena are overall preference and say nothing about anatomy.
    */
   poses?: PoseStat[];
@@ -393,7 +393,7 @@ interface Img {
   /** wins - losses over all comparisons of this image (ties count for nothing). */
   net: number;
   compared: boolean;
-  /** NS-026: catalog pose of the image when its link is verified (not "free", prompt not edited). */
+  /** NS-026: planned catalog pose of the image (not "free", prompt not edited after planning). */
   poseId?: string;
 }
 
@@ -536,7 +536,7 @@ export async function buildMemory(dir: string, limit = COLLECTION_LIMIT): Promis
         best: selections[String(f.frame)] === f.variant,
         net: 0,
         compared: false,
-        ...(f.pose?.verified && f.pose.id !== FREE_POSE ? { poseId: f.pose.id } : {}),
+        ...(f.pose?.promptAsPlanned && f.pose.id !== FREE_POSE ? { poseId: f.pose.id } : {}),
       });
     }
     // Arena: one image is one observation however many comparisons it took part in (they are linked, not independent).

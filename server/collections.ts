@@ -24,10 +24,11 @@ export interface FrameView {
   /** NS-017: the prompt was edited before regenerating. */
   promptEdited?: boolean;
   /**
-   * NS-026: the pose this image was planned with (auto pose mode only). `label` is the human-readable name; it is absent for a
-   * frame where Codex invented the pose (id "free") or when the catalog no longer has the id. verified=false after a prompt edit.
+   * NS-026: the PLANNED pose of this image (auto pose mode only): what its prompt was written for, not a check of the PNG.
+   * `label` is the human-readable name; it is absent for a frame where Codex invented the pose (id "free") or when the catalog no
+   * longer has the id. promptAsPlanned=false after a prompt edit.
    */
-  pose?: { id: string; label?: string; description?: string; verified: boolean };
+  pose?: { id: string; label?: string; description?: string; promptAsPlanned: boolean };
 }
 
 export interface CollectionView {
@@ -231,7 +232,7 @@ function poseView(raw: unknown): { pose?: FrameView["pose"] } {
   } catch {
     entry = undefined; // an unreadable catalog never breaks the gallery
   }
-  return { pose: { id: p.id, ...(entry ? { label: entry.nameRu, description: entry.description } : {}), verified: p.verified } };
+  return { pose: { id: p.id, ...(entry ? { label: entry.nameRu, description: entry.description } : {}), promptAsPlanned: p.promptAsPlanned } };
 }
 
 export async function readCollection(dir: string, id: string, activeId?: string): Promise<CollectionView | null> {

@@ -48,6 +48,11 @@ export interface ValidateOptions {
    * Without it (free mode) a frame may have no poseId or FREE_POSE only.
    */
   poseIds?: readonly string[];
+  /**
+   * NS-026: per frame (index 0 = frame 1) the ids allowed by that frame's explicit composition requirements; null/absent = any id of
+   * `poseIds`. [] = only FREE_POSE. Same requirements apply to every collection of a batch.
+   */
+  framePoseIds?: ReadonlyArray<readonly string[] | null>;
 }
 
 // Adult ages stated as "29 years old" or "25-35 years old"; every stated age must be >= 21.
@@ -92,7 +97,9 @@ export function validatePlan(x: unknown, opts: ValidateOptions = {}): PromptPlan
       const text = `${f.positive} ${f.negative ?? ""}`.toLowerCase();
       for (const w of BANNED) if (text.includes(w)) errs.push(`frames[${i}] contains banned phrase "${w}"`);
       if (opts.poseIds) {
+        const own = opts.framePoseIds?.[i];
         if (typeof f.poseId !== "string" || (f.poseId !== FREE_POSE && !opts.poseIds.includes(f.poseId))) errs.push(`frames[${i}].poseId must be one of the offered poses or "${FREE_POSE}", got ${JSON.stringify(f.poseId)}`);
+        else if (own && f.poseId !== FREE_POSE && !own.includes(f.poseId)) errs.push(`frames[${i}].poseId ${f.poseId} does not fit this frame's composition requirements (allowed: ${[...own, FREE_POSE].join(", ")})`);
       } else if (f.poseId !== undefined && f.poseId !== FREE_POSE) errs.push(`frames[${i}].poseId ${JSON.stringify(f.poseId)} was not requested`);
       if (POSE_ID_TEXT.test(`${f.positive} ${f.summary} ${f.summaryRu ?? ""}`)) errs.push(`frames[${i}] must not mention a pose id in its prompt or summary`);
       if (!opts.legacy && str(f.positive)) {

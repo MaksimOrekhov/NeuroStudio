@@ -21,7 +21,7 @@ export interface Frame {
   /** The prompt was edited before regenerating. */
   promptEdited?: boolean;
   /** NS-026: pose from the library (auto pose mode). label = human-readable name; absent when Codex invented the pose. */
-  pose?: { id: string; label?: string; description?: string; verified: boolean };
+  pose?: { id: string; label?: string; description?: string; promptAsPlanned: boolean };
 }
 
 export interface Feedback {

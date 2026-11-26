@@ -13,7 +13,8 @@ import { buildPreferenceContext } from "./promptEvolution.ts";
 import { loadVisualHistory } from "../src/visualHistory.ts";
 import { writeAtomic } from "../src/persistence.ts";
 import { loadSource, parseFrame, parsePositive, parseVariant, frameCountOf, reserve, runRegeneration } from "../src/regenerate.ts";
-import { anatomyCaution, countPoseUses, listedIds, loadPoseCatalog, selectPoses, type PoseMode, type PoseSelection } from "../src/poses.ts";
+import { anatomyCaution, countPoseUses, framePoseIds, listedIds, loadPoseCatalog, selectPoses, type PoseMode, type PoseSelection } from "../src/poses.ts";
+import { VIEW_HISTORY_COLLECTIONS, viewHistory, viewNote } from "./poseHistory.ts";
 
 /** NS-026: newest collections whose saved poseIds lower a pose's priority in the next sample. */
 export const RECENT_POSE_COLLECTIONS = 12;
@@ -276,7 +277,7 @@ export class AutopilotRunner {
       const history = await loadVisualHistory(collectionsDir, recent); // NS-023: "" when nothing can be extracted reliably
 
       // NS-026: the pose sample is chosen locally and goes into the SAME single Codex request. Free mode skips all of this.
-      let poses: { catalogVersion: number; sample: ReturnType<typeof selectPoses> } | undefined;
+      let poses: { catalogVersion: number; sample: ReturnType<typeof selectPoses>; note?: string } | undefined;
       if (poseSelection === "auto") {
         const catalog = loadPoseCatalog(this.deps.poseCatalogPath);
         const plans: unknown[] = [];
@@ -290,9 +291,19 @@ export class AutopilotRunner {
         const seed = this.deps.poseSeed?.() ?? randomInt(0, 2 ** 31);
         const used = countPoseUses(plans);
         const cautious = anatomyCaution(ctx?.memory);
-        const sample = selectPoses({ catalog, resolved: resolveComposition(composition, frames), frames, collections: count, seed, recent: used, cautious });
-        poses = { catalogVersion: catalog.version, sample };
-        batch.poseSelection = { mode: "auto", catalogVersion: catalog.version, seed, sample: listedIds(sample, catalog.version), recent: used, cautious };
+        const req = resolveComposition(composition, frames);
+        const sample = selectPoses({ catalog, resolved: req, frames, collections: count, seed, recent: used, cautious });
+        const ids = listedIds(sample, catalog.version);
+        const listed = sample.filter((p) => ids.includes(p.id));
+        // View order of recent collections (catalog AND free frames) -> a soft hint; an explicit last-frame view requirement wins.
+        const views = viewHistory(plans, VIEW_HISTORY_COLLECTIONS);
+        const note = viewNote(views, listed, req[frames - 1]);
+        poses = { catalogVersion: catalog.version, sample, ...(note.text ? { note: note.text } : {}) };
+        batch.poseSelection = {
+          mode: "auto", catalogVersion: catalog.version, seed, sample: ids, recent: used, cautious,
+          frames: framePoseIds(listed, req, frames),
+          views: { ...views, finalSuggestions: note.finalSuggestions },
+        };
         generation.pose = { mode: "auto", catalogVersion: catalog.version };
         await saveBatch(); // the sample is on disk before Codex sees it
       }
