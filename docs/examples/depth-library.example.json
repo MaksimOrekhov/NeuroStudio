@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "note": "NS-027 example of local/depth/library.json. The real file and every map live ONLY in the git-ignored local/depth/ folder. Values here are placeholders.",
+  "adapter": {
+    "file": "anima-lllite-depth-1.safetensors",
+    "sha256": "81357e51cd59874b4fbdda1eb3117aa73eafe36cc7efb9cf80a152d6bc8d0602",
+    "source": "https://huggingface.co/Comfy-Org/Anima-LLLite/blob/main/model_patches/anima-lllite-depth-1.safetensors",
+    "license": "CircleStone Labs Non-Commercial License",
+    "localCopy": "<absolute path of the already downloaded adapter, used only in install instructions>"
+  },
+  "maps": [
+    {
+      "id": "nd-p25-fq-h2mt-01",
+      "poseId": "ND-P25",
+      "file": "maps/nd-p25-fq-h2mt-01.png",
+      "sha256": "<sha256 of the PNG, 64 lowercase hex>",
+      "size": [1440, 2176],
+      "views": ["front_three_quarter_view"],
+      "crops": ["head_to_mid_thigh"],
+      "viewpoints": ["eye_level"],
+      "poses": ["standing_with_weight_on_one_leg", "standing_naturally"],
+      "posture": "standing",
+      "handOnHip": { "anatomical": "right", "image": "left" },
+      "models": ["crimson-oath", "duskrose", "illustrijn"],
+      "depth": { "strength": 1, "startPercent": 0, "endPercent": 1 },
+      "smoothBooster": false,
+      "status": "verified",
+      "evidence": "<where and how the map was checked>",
+      "provenance": {
+        "database": "<source>",
+        "sourceId": "<id of the source image>",
+        "transform": "<crop and resize applied>",
+        "terms": "<usage terms of the source image>"
+      }
+    }
+  ]
+}

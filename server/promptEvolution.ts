@@ -141,6 +141,9 @@ export interface FeatureStat {
 }
 export interface PoseStat {
   poseId: string;
+  /** NS-027: statistics are kept apart per image model and per conditioning (text-only vs depth map); never merged into one verdict. */
+  model: string;
+  conditioning: "text" | "depth";
   images: number;
   collections: number;
   likes: number;
@@ -357,16 +360,20 @@ const POSE_ISSUES: Record<keyof PoseStat["issues"], ReadonlySet<string>> = {
 };
 
 /** NS-026: raw per-pose counts of images with any signal (see PreferenceMemory.poses). */
-export function poseStats(images: ReadonlyArray<Pick<Img, "poseId" | "collection" | "verdict" | "tags" | "best" | "net">>): PoseStat[] {
+export function poseStats(images: ReadonlyArray<Pick<Img, "poseId" | "model" | "conditioning" | "collection" | "verdict" | "tags" | "best" | "net">>): PoseStat[] {
   const groups = new Map<string, typeof images[number][]>();
   for (const im of images) {
     if (!im.poseId || !(im.verdict || im.best || im.net)) continue;
-    groups.set(im.poseId, [...(groups.get(im.poseId) ?? []), im]);
+    const key = JSON.stringify([im.poseId, im.model, im.conditioning]);
+    groups.set(key, [...(groups.get(key) ?? []), im]);
   }
-  return [...groups].map(([poseId, imgs]) => {
+  return [...groups.values()].map((imgs) => {
+    const { poseId, model, conditioning } = imgs[0];
     const issue = (k: keyof PoseStat["issues"]) => imgs.filter((i) => i.verdict === "dislike" && i.tags.some((t) => POSE_ISSUES[k].has(t))).length;
     return {
-      poseId,
+      poseId: poseId!,
+      model,
+      conditioning,
       images: imgs.length,
       collections: new Set(imgs.map((i) => i.collection.id)).size,
       likes: imgs.filter((i) => i.verdict === "like").length,
@@ -375,7 +382,7 @@ export function poseStats(images: ReadonlyArray<Pick<Img, "poseId" | "collection
       arenaPreferred: imgs.filter((i) => i.net > 0).length,
       issues: { hands: issue("hands"), legs: issue("legs"), body: issue("body"), angle: issue("angle"), composition: issue("composition") },
     };
-  }).sort((a, b) => b.images - a.images || a.poseId.localeCompare(b.poseId));
+  }).sort((a, b) => b.images - a.images || a.poseId.localeCompare(b.poseId) || a.model.localeCompare(b.model) || a.conditioning.localeCompare(b.conditioning));
 }
 
 interface Img {
@@ -395,6 +402,8 @@ interface Img {
   compared: boolean;
   /** NS-026: planned catalog pose of the image (not "free", prompt not edited after planning). */
   poseId?: string;
+  /** NS-027: whether a depth map was actually applied to the image. */
+  conditioning: "text" | "depth";
 }
 
 const conflicted = (i: Img) => i.verdict === "dislike" && (i.best || i.net > 0);
@@ -537,6 +546,7 @@ export async function buildMemory(dir: string, limit = COLLECTION_LIMIT): Promis
         net: 0,
         compared: false,
         ...(f.pose?.promptAsPlanned && f.pose.id !== FREE_POSE ? { poseId: f.pose.id } : {}),
+        conditioning: f.conditioning?.mode === "depth" ? "depth" : "text",
       });
     }
     // Arena: one image is one observation however many comparisons it took part in (they are linked, not independent).

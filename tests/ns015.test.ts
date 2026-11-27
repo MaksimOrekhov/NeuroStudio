@@ -148,7 +148,7 @@ test("Generate: one POST, 202 shown at once, no automatic second request, the fo
   await until(() => !runner.active);
   assert.equal(seen.plan.length, 1);
   assert.equal(calls.filter((c) => c.url === "/api/autopilot/start").length, 1);
-  assert.deepEqual((seen.plan[0] as any).models, ["crimson-oath", "duskrose"]);
+  assert.deepEqual((seen.plan[0] as any).models, ["crimson-oath-v03", "duskrose"]);
 });
 
 test("Generate: a second click while the first is in flight or while a run is active sends nothing", async () => {

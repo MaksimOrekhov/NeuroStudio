@@ -1,25 +1,37 @@
 // Single catalog of image models (ComfyUI checkpoints) and the per-frame assignment rules (NS-014).
 // No imports: it is used by the server, the CLI and (type/rule-wise) by the UI prototype.
 
+/**
+ * Every model a frame can use (single-model and Custom modes, old collections). An id is stable forever: it is stored in Prompt Plans,
+ * manifests, sidecars, ratings and Prompt Evolution statistics, so a new checkpoint version gets a NEW id and an old id is never
+ * re-pointed at another file (NS-027: "crimson-oath" stays v0.2, v0.3 is "crimson-oath-v03").
+ */
 export const IMAGE_MODELS = [
-  { id: "crimson-oath", name: "Crimson Oath", checkpoint: "vetehineCrimsonOathILL_v02ANM.safetensors", color: "#f0607a" },
-  { id: "duskrose", name: "Duskrose", checkpoint: "Duskrose v4 ANM.safetensors", color: "#b48cff" },
+  { id: "crimson-oath", name: "Crimson Oath v0.2", checkpoint: "vetehineCrimsonOathILL_v02ANM.safetensors", color: "#f0607a" },
+  { id: "crimson-oath-v03", name: "Crimson Oath v0.3", checkpoint: "v.0.3 ANM Vetehine Crimson Oath.safetensors", color: "#ff9b6a" },
+  { id: "duskrose", name: "Duskrose v4", checkpoint: "Duskrose v4 ANM.safetensors", color: "#b48cff" },
   { id: "illustrijn", name: "IllustrijN", checkpoint: "IllustrijN.safetensors", color: "#54c9b0" },
 ] as const;
 
 export type ImageModelId = (typeof IMAGE_MODELS)[number]["id"];
 export const MODEL_IDS: ImageModelId[] = IMAGE_MODELS.map((m) => m.id);
 export const isModelId = (x: unknown): x is ImageModelId => typeof x === "string" && (MODEL_IDS as string[]).includes(x);
+
+/**
+ * The models Auto Mix distributes frames over, in order: a subset of IMAGE_MODELS. Crimson Oath v0.2 stays selectable (single model,
+ * Custom, old collections) but is no longer part of Auto Mix (NS-027). Server, CLI and UI all read this one list.
+ */
+export const AUTO_MIX_MODELS: readonly ImageModelId[] = ["crimson-oath-v03", "duskrose", "illustrijn"];
 /** Position in the catalog; used to group jobs by model. */
 export const modelIndex = (id: string) => MODEL_IDS.indexOf(id as ImageModelId);
 
 export const MAX_FRAMES = 4;
 
 /**
- * Auto Mix: contiguous blocks in catalog order; the first models get the remainder.
- * With the current catalog: 1 -> C, 2 -> C D, 3 -> C D I, 4 -> C C D I.
+ * Auto Mix: contiguous blocks in AUTO_MIX_MODELS order; the first models get the remainder.
+ * With the current list: 1 -> C3, 2 -> C3 D, 3 -> C3 D I, 4 -> C3 C3 D I (C3 = Crimson Oath v0.3; the split is the pre-NS-027 one).
  */
-export function autoMix(frames: number, models: readonly string[] = MODEL_IDS): string[] {
+export function autoMix(frames: number, models: readonly string[] = AUTO_MIX_MODELS): string[] {
   if (!models.length) return [];
   const base = Math.floor(frames / models.length);
   const extra = frames % models.length;

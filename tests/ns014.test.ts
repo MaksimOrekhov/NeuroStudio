@@ -19,6 +19,8 @@ const root = resolve(import.meta.dirname, "..");
 const PORT = 8787;
 const H = { host: `127.0.0.1:${PORT}` };
 const C = "crimson-oath";
+/** NS-027: Auto Mix uses Crimson Oath v0.3; "crimson-oath" (v0.2) stays selectable. */
+const C3 = "crimson-oath-v03";
 const D = "duskrose";
 const I = "illustrijn";
 const wait = async (r: AutopilotRunner) => {
@@ -30,6 +32,7 @@ const wait = async (r: AutopilotRunner) => {
 test("catalog: supported models have id, name, checkpoint and colour; MODELS is derived from it", () => {
   assert.deepEqual(IMAGE_MODELS.map((m) => [m.id, m.checkpoint]), [
     [C, "vetehineCrimsonOathILL_v02ANM.safetensors"],
+    [C3, "v.0.3 ANM Vetehine Crimson Oath.safetensors"],
     [D, "Duskrose v4 ANM.safetensors"],
     [I, "IllustrijN.safetensors"],
   ]);
@@ -38,9 +41,9 @@ test("catalog: supported models have id, name, checkpoint and colour; MODELS is 
 });
 
 test("Auto Mix for 1-4 frames; Only; Custom incl. four frames of one model", () => {
-  assert.deepEqual([1, 2, 3, 4].map((n) => autoMix(n)), [[C], [C, D], [C, D, I], [C, C, D, I]]);
-  assert.deepEqual(resolveImageModels(undefined, 4), { mode: "auto", models: [C, C, D, I] });
-  assert.deepEqual(resolveImageModels({ mode: "auto" }, 3).models, [C, D, I]);
+  assert.deepEqual([1, 2, 3, 4].map((n) => autoMix(n)), [[C3], [C3, D], [C3, D, I], [C3, C3, D, I]]);
+  assert.deepEqual(resolveImageModels(undefined, 4), { mode: "auto", models: [C3, C3, D, I] });
+  assert.deepEqual(resolveImageModels({ mode: "auto" }, 3).models, [C3, D, I]);
   assert.deepEqual(resolveImageModels({ mode: "only", model: D }, 3), { mode: "only", models: [D, D, D] });
   assert.deepEqual(resolveImageModels({ mode: "custom", perScene: [D, C, D] }, 3).models, [D, C, D]);
   assert.deepEqual(resolveImageModels({ mode: "custom", perScene: [C, C, C, C] }, 4).models, [C, C, C, C]);
@@ -295,13 +298,13 @@ test("old request without new fields: 4 frames with current Auto Mix, Plan v3 re
   const { start, runner, seen, get, dir, batchesDir } = await setup();
   assert.equal((await start({ theme: "old", collections: 1, variations: 1 })).statusCode, 202);
   await wait(runner);
-  assert.deepEqual(seen.plan[0].models, [C, C, D, I]);
+  assert.deepEqual(seen.plan[0].models, [C3, C3, D, I]);
   assert.equal(seen.submit.length, 4);
-  assert.deepEqual(seen.submit.map((s) => s.unet), [MODELS[C], MODELS[C], MODELS[D], MODELS[I]]);
+  assert.deepEqual(seen.submit.map((s) => s.unet), [MODELS[C3], MODELS[C3], MODELS[D], MODELS[I]]);
   assert.equal(runner.state.total, 4);
   const [c] = await get("/api/collections");
   assert.equal(c.frameCount, 4);
-  assert.deepEqual(c.generation.imageModels, { mode: "auto", models: [C, C, D, I] });
+  assert.deepEqual(c.generation.imageModels, { mode: "auto", models: [C3, C3, D, I] });
   const run = (await get("/api/runs"))[0];
   assert.equal(run.frames, 4);
   assert.equal(run.status, "completed");
@@ -311,10 +314,10 @@ test("old request without new fields: 4 frames with current Auto Mix, Plan v3 re
 
 test("examples: 1, 2 and 4 frames; counts, models, metadata, CollectionView fields", async () => {
   const cases: { body: any; models: string[]; jobs: number }[] = [
-    { body: { collections: 1, frames: 1, variations: 1 }, models: [C], jobs: 1 },
+    { body: { collections: 1, frames: 1, variations: 1 }, models: [C3], jobs: 1 },
     { body: { collections: 2, frames: 2, variations: 2, imageModels: { mode: "only", model: D } }, models: [D, D], jobs: 8 },
     { body: { collections: 3, frames: 4, variations: 4, imageModels: { mode: "custom", perScene: [C, D, D, C] } }, models: [C, D, D, C], jobs: 48 },
-    { body: { collections: 3, frames: 2, variations: 4 }, models: [C, D], jobs: 24 },
+    { body: { collections: 3, frames: 2, variations: 4 }, models: [C3, D], jobs: 24 },
   ];
   for (const { body, models, jobs } of cases) {
     const { start, runner, seen, get, batchesDir } = await setup();
@@ -675,7 +678,7 @@ test("planning stage: record is written before Codex is called (status running, 
   assert.deepEqual(seenBefore.file.plans, []);
   assert.deepEqual(seenBefore.file.collectionIds, []);
   assert.deepEqual([seenBefore.file.count, seenBefore.file.frames, seenBefore.file.variations], [1, 2, 1]);
-  assert.deepEqual(seenBefore.file.imageModels, { mode: "auto", models: [C, D] });
+  assert.deepEqual(seenBefore.file.imageModels, { mode: "auto", models: [C3, D] });
   assert.equal(seenBefore.file.codex.seconds, undefined);
   // after success: the same record carries plans, metrics and the collection id
   const [run] = await s.get("/api/runs");

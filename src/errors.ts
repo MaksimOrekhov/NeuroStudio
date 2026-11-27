@@ -19,6 +19,8 @@ export const ERROR_CODES = [
   "COMPARISON_FILE_UNREADABLE", // 409: comparisons.json exists but cannot be read/validated; saving is refused, the file is left untouched
   "PREFERENCE_MEMORY_FAILED", // 500: Prompt Evolution preview could not be built (a run continues without the memory)
   "VARIANT_LIMIT", // 409: the frame already has the maximum number of variants (-v99)
+  "DEPTH_CONFLICT", // 409: regeneration with an edited prompt that does not clearly fit the source's depth map; keep or drop it explicitly
+  "DEPTH_UNAVAILABLE", // 409: regeneration keeping a depth map that ComfyUI cannot use now (map, nodes or adapter missing); nothing was reserved
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 

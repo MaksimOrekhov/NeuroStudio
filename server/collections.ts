@@ -5,6 +5,7 @@ import type { PromptPlan } from "../src/promptPlan.ts";
 import { io, writeAtomic } from "../src/persistence.ts";
 import { IMAGE_NOTE_MAX, IMAGE_TAGS } from "../src/imageFeedback.ts";
 import { FREE_POSE, poseById, readFramePose, loadPoseCatalog } from "../src/poses.ts";
+import { readConditioning, type Conditioning } from "../src/depth.ts";
 
 export interface FrameView {
   frame: number;
@@ -29,6 +30,8 @@ export interface FrameView {
    * longer has the id. promptAsPlanned=false after a prompt edit.
    */
   pose?: { id: string; label?: string; description?: string; promptAsPlanned: boolean };
+  /** NS-027: conditioning actually used (depth map, or text-only with the reason). Absent when Depth was not requested. */
+  conditioning?: Conditioning;
 }
 
 export interface CollectionView {
@@ -222,6 +225,12 @@ export async function loadFeedback(dir: string, id: string): Promise<Feedback | 
 // Keep the existing display contract; writes use the strict reader and never replace unreadable data.
 const readFeedback = (dir: string, id: string) => loadFeedback(dir, id).catch(() => null);
 
+/** NS-027: the frame's conditioning record; {} when absent or malformed. Never throws. */
+function conditioningView(raw: unknown): { conditioning?: Conditioning } {
+  const c = readConditioning(raw);
+  return c ? { conditioning: c } : {};
+}
+
 /** Human-readable pose of a frame record; {} when there is none (older collections, free mode). Never throws. */
 function poseView(raw: unknown): { pose?: FrameView["pose"] } {
   const p = readFramePose(raw);
@@ -260,6 +269,7 @@ export async function readCollection(dir: string, id: string, activeId?: string)
         sourceVariant: f.sourceVariant,
         promptEdited: f.promptEdited,
         ...poseView(f.pose),
+        ...conditioningView(f.conditioning),
       }))
       .sort((a, b) => a.frame - b.frame || a.variant - b.variant);
     const status = m.status === "running" && id !== activeId ? "interrupted" : m.status;

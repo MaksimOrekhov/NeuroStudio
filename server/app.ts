@@ -3,7 +3,10 @@ import { stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import Fastify, { type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
-import { ComfyClient } from "../src/comfy.ts";
+import { ComfyClient, depthOf } from "../src/comfy.ts";
+import { parseDepthMode, type DepthMode } from "../src/depth.ts";
+import { DEPTH_DIR, adapterInstructions, depthEnvironment, loadDepthLibrary } from "../src/depthLibrary.ts";
+import { loadPoseCatalog } from "../src/poses.ts";
 import { FeedbackError, ImageFeedbackError, ImageFeedbackFileError, SelectionError, setImageFeedback, listCollections, readCollection, safeImagePath, setFeedback, setSelection } from "./collections.ts";
 import { ExportError, planExport, zipStream } from "./export.ts";
 import { getThumbnail } from "./thumbs.ts";
@@ -33,6 +36,9 @@ export interface AppDeps {
   loadCatalog?: () => Promise<Catalog>;
   /** For tests */
   statusClient?: Pick<ComfyClient, "systemStats" | "queue">;
+  /** NS-027: Depth library folder (default local/depth) and the client asked for node/adapter presence. For tests. */
+  depthDir?: string;
+  depthClient?: Partial<Pick<ComfyClient, "objectInfo">>;
 }
 
 export function buildApp(d: AppDeps) {
@@ -41,6 +47,8 @@ export function buildApp(d: AppDeps) {
   const catalog = d.loadCatalog ?? (() => loadCatalog());
   const batchesDir = d.batchesDir ?? join(dirname(resolve(d.collectionsDir)), "batches");
   const status = d.statusClient ?? new ComfyClient(d.comfyUrl, fetch, 2000);
+  const depthClient = d.depthClient ?? new ComfyClient(d.comfyUrl, fetch, 5000);
+  const depthDir = d.depthDir ?? DEPTH_DIR;
   const allowedHosts = new Set([`127.0.0.1:${d.port}`, `localhost:${d.port}`, "127.0.0.1:5173", "localhost:5173"]);
 
   // Local-only hardening: block DNS rebinding (Host header) and cross-site POSTs (Origin header).
@@ -76,6 +84,7 @@ export function buildApp(d: AppDeps) {
     let codex: ReturnType<typeof resolveSelection>;
     let promptEvolution = false;
     let poseSelection: PoseMode;
+    let depth: DepthMode;
     // Everything is validated here, before ComfyUI is contacted and before Codex is started.
     try {
       count = parseCount(body.collections);
@@ -84,6 +93,7 @@ export function buildApp(d: AppDeps) {
       if (body.promptEvolution !== undefined && typeof body.promptEvolution !== "boolean") throw new Error("promptEvolution must be a boolean");
       promptEvolution = body.promptEvolution === true;
       poseSelection = parsePoseMode(body.poseSelection); // NS-026: absent = "free", the pre-NS-026 behaviour
+      depth = parseDepthMode(body.depthConditioning, poseSelection); // NS-027: absent = "off", the pre-NS-027 behaviour
       images = resolveImageModels(body.imageModels, frames);
       composition = parseComposition(body.composition, frames);
       codex = body.codexModel == null && body.codexReasoningEffort == null ? {} : resolveSelection(await catalog(), body.codexModel, body.codexReasoningEffort); // old calls never touch the catalog
@@ -92,7 +102,7 @@ export function buildApp(d: AppDeps) {
     }
     const theme = typeof body.theme === "string" ? body.theme.trim().slice(0, 200) : "";
     try {
-      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations, composition, codex, images, promptEvolution, poseSelection));
+      return reply.code(202).send(await d.runner.start(theme || undefined, count, variations, composition, codex, images, promptEvolution, poseSelection, depth));
     } catch (e) {
       if (e instanceof RunError) return fail(reply, e.httpStatus, e.code, e.message);
       throw e;
@@ -107,6 +117,28 @@ export function buildApp(d: AppDeps) {
     } catch (e) {
       return fail(reply, 500, "PREFERENCE_MEMORY_FAILED", (e as Error).message);
     }
+  });
+
+  /** NS-027: is Depth usable right now? Reads the local library and asks ComfyUI which nodes/adapter it lists (presence only, never the hash). */
+  app.get("/api/depth/status", async () => {
+    let lib;
+    try {
+      lib = loadDepthLibrary(depthDir, loadPoseCatalog());
+    } catch (e) {
+      lib = { ok: false as const, error: (e as Error).message };
+    }
+    const library = lib.ok
+      ? {
+          available: true,
+          version: lib.library.version,
+          adapter: lib.library.adapter.file,
+          maps: lib.library.maps.map((m) => ({ id: m.id, poseId: m.poseId, status: m.status, views: m.views, crops: m.crops, viewpoints: m.viewpoints, models: m.models, size: m.size })),
+          excluded: lib.library.excluded,
+        }
+      : { available: false, error: lib.error };
+    const comfy = lib.ok ? { ...(await depthEnvironment(depthClient, lib.library.adapter.file)), check: "listed-by-comfyui" as const } : null;
+    const instructions = lib.ok && comfy?.nodes && !comfy.adapter ? adapterInstructions(lib.library) : undefined;
+    return { library, comfy, ...(instructions ? { instructions } : {}) };
   });
 
   app.get("/api/codex/models", async () => {
@@ -153,7 +185,11 @@ export function buildApp(d: AppDeps) {
       const variant = parseVariant(p.variant);
       try {
         const s = await loadSource(d.collectionsDir, p.id, frame, variant);
-        return { frame, variant, model: s.model, positive: s.positive, promptEdited: s.promptEdited, available: true };
+        // NS-027: when the saved graph has a depth map, the UI gets what the map supports to pre-check an edited prompt.
+        const dn = depthOf(s.graph);
+        const cond = s.conditioning?.mode === "depth" ? s.conditioning : undefined;
+        const depth = dn ? { applied: true, ...(cond ? { mapId: cond.mapId, spec: cond.spec } : {}), requirements: s.requirements } : undefined;
+        return { frame, variant, model: s.model, positive: s.positive, promptEdited: s.promptEdited, available: true, ...(depth ? { depth } : {}) };
       } catch (e) {
         if (e instanceof RegenError && e.code === "SOURCE_UNAVAILABLE") return { frame, variant, available: false, code: e.code, reason: e.message };
         throw e;
@@ -169,7 +205,7 @@ export function buildApp(d: AppDeps) {
     const p = req.params as { id: string; frame: string };
     const body = (req.body ?? {}) as Record<string, unknown>;
     try {
-      const state = await d.runner.startRegeneration({ collectionId: p.id, frame: p.frame, sourceVariant: body.sourceVariant, positive: body.positive });
+      const state = await d.runner.startRegeneration({ collectionId: p.id, frame: p.frame, sourceVariant: body.sourceVariant, positive: body.positive, depth: body.depth });
       return reply.code(202).send(state);
     } catch (e) {
       if (e instanceof RunError || e instanceof RegenError) return fail(reply, e.httpStatus, e.code, e.message);

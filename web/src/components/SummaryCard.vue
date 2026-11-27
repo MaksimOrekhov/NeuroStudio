@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { formula, modelUsage, sceneList } from "../models";
 import { effortRu, ruPlural, W } from "../ru";
 import ErrorNote from "./ErrorNote.vue";
-import { app, assigned, canStart, codexModels, comfyOk, form, go, guided, run, running, startGeneration, total } from "../store";
+import { app, assigned, canStart, codexModels, comfyOk, depthActive, depthWarning, form, go, guided, run, running, startGeneration, total } from "../store";
 
 const usage = computed(() => modelUsage(assigned.value));
 const codex = computed(() => {
@@ -44,6 +44,10 @@ async function generate() {
       <div>
         <dt>Позы</dt>
         <dd :class="{ muted: form.poseMode !== 'auto' }">{{ form.poseMode === "auto" ? "Авто — из библиотеки поз" : "Свободные — придумывает Codex" }}</dd>
+      </div>
+      <div>
+        <dt>Depth</dt>
+        <dd :class="{ muted: !depthActive }">{{ depthActive ? (depthWarning ? "Включён, но сейчас недоступен — кадры пойдут по тексту" : "Экспериментально — только для совпадающих кадров") : "Выключен" }}</dd>
       </div>
       <div>
         <dt>Композиция</dt>

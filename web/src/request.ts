@@ -20,6 +20,8 @@ export interface FormState {
   promptEvolution: boolean;
   /** NS-026: "free" (default, as before) or "auto" (Codex picks from the pose library). */
   poseMode: "free" | "auto";
+  /** NS-027: experimental depth maps; used only together with poseMode "auto"; off by default. */
+  depthMode: "off" | "auto";
   global: Fields;
   /** Settings of all MAX_FRAMES scenes; only the first `frames` are ever sent. */
   scenes: Fields[];
@@ -37,6 +39,7 @@ export function defaultForm(): FormState {
     codexEffort: "",
     promptEvolution: false,
     poseMode: "free",
+    depthMode: "off",
     global: blank(AUTO),
     scenes: Array.from({ length: MAX_FRAMES }, () => blank(INHERIT)),
   };
@@ -76,5 +79,6 @@ export function buildStartRequest(f: FormState): Readonly<StartRequest> {
   if (f.codexEffort) req.codexReasoningEffort = f.codexEffort;
   if (f.promptEvolution) req.promptEvolution = true; // off = the request is exactly what it was before NS-020
   if (f.poseMode === "auto") req.poseSelection = "auto"; // free = the request is exactly what it was before NS-026
+  if (f.poseMode === "auto" && f.depthMode === "auto") req.depthConditioning = "auto"; // off = exactly the pre-NS-027 request
   return freeze(structuredClone(req));
 }

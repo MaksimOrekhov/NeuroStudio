@@ -1,10 +1,14 @@
 // NS-017: targeted regeneration of ONE image of an existing collection (no Codex, no new plan).
 // The source of every setting is the ComfyUI graph that was saved next to the source variant (<scene-name>.json):
 // only positive prompt (when edited), seed and filename prefix change. Existing images, sidecars and prompts are never touched.
-import { randomInt, randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { FIELDS, ComfyUnavailableError, applyParams, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
+import { FIELDS, ComfyUnavailableError, applyParams, depthOf, removeDepth, setDepthImage, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
+import type { Settings } from "./composition.ts";
+import { promptMismatch, readConditioning, type Conditioning, type DepthChoice, type Mismatch } from "./depth.ts";
+import { MapIdentityError, adapterInstructions, comfyName, ensureMap, loadDepthLibrary, localMap, remoteInput } from "./depthLibrary.ts";
+import { loadPoseCatalog } from "./poses.ts";
 import type { FrameRecord, Manifest } from "./collection.ts";
 import type { ErrorCode } from "./errors.ts";
 import { io, writeAtomic } from "./persistence.ts";
@@ -41,6 +45,10 @@ export interface RegenSource {
   promptEdited: boolean;
   /** NS-026: the source's pose record (absent for images made without the pose catalog). */
   pose?: FramePose;
+  /** NS-027: the source's conditioning record (absent when Depth was not requested). */
+  conditioning?: Conditioning;
+  /** NS-027: the collection's explicit composition requirements for this frame ({} = none). */
+  requirements: Settings;
 }
 
 function collectionDir(dir: string, id: string): string {
@@ -109,7 +117,7 @@ export async function loadSource(dir: string, id: string, frame: number, variant
     throw unavailable(`frame ${frame} variant ${variant}: image file ${rec.png} is missing on disk`);
   }
   const sidecarName = rec.png.replace(/\.png$/, ".json");
-  let side: { graph?: unknown; promptEdited?: unknown; pose?: unknown };
+  let side: { graph?: unknown; promptEdited?: unknown; pose?: unknown; conditioning?: unknown };
   try {
     side = JSON.parse(await readFile(join(cdir, sidecarName), "utf8"));
   } catch {
@@ -126,7 +134,9 @@ export async function loadSource(dir: string, id: string, frame: number, variant
     throw unavailable(`frame ${frame} variant ${variant}: the saved graph is not usable (${(e as Error).message})`);
   }
   const pose = readFramePose(side.pose) ?? readFramePose(rec.pose);
-  return { frame, variant, model: rec.model, positive: text, graph, promptEdited: side.promptEdited === true, ...(pose ? { pose } : {}) };
+  const conditioning = readConditioning(side.conditioning) ?? readConditioning(rec.conditioning);
+  const requirements = { ...(m.generation?.composition?.[frame - 1] ?? {}) };
+  return { frame, variant, model: rec.model, positive: text, graph, promptEdited: side.promptEdited === true, ...(pose ? { pose } : {}), ...(conditioning ? { conditioning } : {}), requirements };
 }
 
 export interface Reservation {
@@ -137,6 +147,7 @@ export interface Reservation {
   positive: string;
   promptEdited: boolean;
   pose?: FramePose;
+  conditioning?: Conditioning;
   record: FrameRecord;
   manifest: Manifest;
   collectionDir: string;
@@ -158,7 +169,7 @@ const writeSidecar = (cdir: string, name: string, data: Record<string, unknown>)
  * sidecar. The number is the highest one ever recorded for the frame + 1 (failed attempts keep their number) and moves on
  * if a file with that name already exists; it is never reused and nothing is overwritten.
  */
-export async function reserve(dir: string, id: string, src: RegenSource, positive: string | undefined): Promise<Reservation> {
+export async function reserve(dir: string, id: string, src: RegenSource, positive: string | undefined, depth?: RegenDepth): Promise<Reservation> {
   const cdir = collectionDir(dir, id);
   const m = await readManifest(dir, id);
   let variant = Math.max(0, ...m.frames.filter((f) => f.frame === src.frame).map((f) => f.variant ?? 1)) + 1;
@@ -173,12 +184,14 @@ export async function reserve(dir: string, id: string, src: RegenSource, positiv
   const folder = typeof prevPrefix === "string" && prevPrefix.includes("/") ? prevPrefix.slice(0, prevPrefix.lastIndexOf("/")) : `NeuroStudio/${id}`;
   const text = positive ?? src.positive;
   // Only these three change; negative prompt, model, sampler settings and size stay exactly as in the saved graph.
-  const graph = applyParams(src.graph, { positive: text, seed, filenamePrefix: `${folder}/${name}` });
+  // NS-027: the Depth nodes of the saved graph stay as they are unless the user dropped them (prepareRegenDepth).
+  const graph = applyParams(depth?.graph ?? src.graph, { positive: text, seed, filenamePrefix: `${folder}/${name}` });
+  const conditioning = depth ? depth.conditioning : src.conditioning;
   const promptEdited = positive !== undefined && positive !== src.positive;
   // NS-026: an unchanged prompt keeps the source's planned pose. After an edit the provenance stays, but the prompt is no longer the planned one.
   const pose: FramePose | undefined = src.pose && (promptEdited ? { ...src.pose, promptAsPlanned: false } : src.pose);
-  const record: FrameRecord = { frame: src.frame, variant, model: src.model, seed, status: "pending", sourceVariant: src.variant, ...(promptEdited ? { promptEdited: true } : {}), ...(pose ? { pose } : {}) };
-  await writeSidecar(cdir, name, { frame: src.frame, variant, model: src.model, seed, sourceVariant: src.variant, promptEdited, ...(pose ? { pose } : {}), positive: text, status: "pending", graph });
+  const record: FrameRecord = { frame: src.frame, variant, model: src.model, seed, status: "pending", sourceVariant: src.variant, ...(promptEdited ? { promptEdited: true } : {}), ...(pose ? { pose } : {}), ...(conditioning ? { conditioning } : {}) };
+  await writeSidecar(cdir, name, { frame: src.frame, variant, model: src.model, seed, sourceVariant: src.variant, promptEdited, ...(pose ? { pose } : {}), ...(conditioning ? { conditioning } : {}), positive: text, status: "pending", graph });
   m.frames.push(record);
   try {
     await saveManifest(cdir, m);
@@ -187,10 +200,99 @@ export async function reserve(dir: string, id: string, src: RegenSource, positiv
     await io.unlink(join(cdir, `${name}.json`)).catch(() => {});
     throw e;
   }
-  return { name, variant, seed, graph, positive: text, promptEdited, ...(pose ? { pose } : {}), record, manifest: m, collectionDir: cdir };
+  return { name, variant, seed, graph, positive: text, promptEdited, ...(pose ? { pose } : {}), ...(conditioning ? { conditioning } : {}), record, manifest: m, collectionDir: cdir };
 }
 
 type Client = Pick<ComfyClient, "systemStats" | "checkDependencies" | "submit" | "waitForImages" | "download">;
+
+// ---------- NS-027: Depth on regeneration ----------
+
+/** The graph to regenerate from and the conditioning record of the new variant. */
+export interface RegenDepth {
+  graph: Graph;
+  conditioning?: Conditioning;
+}
+
+/**
+ * Decides what happens to the source's depth map BEFORE anything is reserved:
+ * - no Depth in the source graph: unchanged (a keep/drop choice is a 400);
+ * - unchanged prompt: keep by default, drop on request;
+ * - edited prompt: checked against the map's stored spec (view, shot size, gesture, hand side...); a conflict without an explicit
+ *   choice is DEPTH_CONFLICT (409);
+ * - drop: the three nodes go and KSampler gets its original model link back;
+ * - keep: ComfyUI must list the nodes and the adapter, and its input folder must hold a file whose SHA-256 is the recorded one
+ *   (checked through /view, never assumed from the name). A missing copy is uploaded again under the content-addressed name, taken
+ *   from the library map with that hash or from the file the saved graph points to (an older subfolder path), both hash-checked; the
+ *   new graph then points to that name. Anything else is DEPTH_UNAVAILABLE (409): never a silent switch to text, never another map.
+ */
+export async function prepareRegenDepth(o: {
+  src: RegenSource;
+  positive?: string;
+  choice?: DepthChoice;
+  client: Partial<Pick<ComfyClient, "objectInfo" | "uploadImage" | "download">>;
+  depthDir: string;
+  poseCatalogPath?: string;
+}): Promise<RegenDepth> {
+  const { src } = o;
+  const d = depthOf(src.graph);
+  if (!d) {
+    if (o.choice) throw new RegenError("INVALID_REQUEST", "this variant was generated without a depth map", 400);
+    return { graph: src.graph, ...(src.conditioning ? { conditioning: src.conditioning } : {}) };
+  }
+  const cond = src.conditioning?.mode === "depth" ? src.conditioning : undefined;
+  const edited = o.positive !== undefined && o.positive !== src.positive;
+  let conflict: Mismatch | null = null;
+  if (edited) conflict = cond ? promptMismatch(cond.spec, o.positive!, src.requirements) : { reason: "map-invalid", detail: "the source has no Depth record to check the edited prompt against" };
+  const choice = o.choice ?? (conflict ? undefined : "keep");
+  if (!choice) throw new RegenError("DEPTH_CONFLICT", `the edited prompt does not clearly fit the depth map (${conflict!.reason}${conflict!.detail ? `: ${conflict!.detail}` : ""}); choose to keep or drop the map`, 409);
+  if (choice === "drop") {
+    return { graph: removeDepth(src.graph), ...(cond ? { conditioning: { mode: "text", userDecision: "drop", droppedFrom: { mapId: cond.mapId, mapSha256: cond.mapSha256 } } } : {}) };
+  }
+  const unavailable = (why: string) => new RegenError("DEPTH_UNAVAILABLE", `${why}; regenerate without the map`, 409);
+  if (!cond) throw unavailable("the source has no Depth record, so the identity of its map cannot be verified");
+  const client = o.client;
+  if (!client.objectInfo || !client.download || !client.uploadImage) throw unavailable("the ComfyUI client cannot verify the map");
+  let info: Record<string, any>;
+  try {
+    info = await client.objectInfo();
+  } catch (e) {
+    throw new RegenError("COMFY_UNREACHABLE", `ComfyUI is not reachable: ${(e as Error).message}`, 503);
+  }
+  if (!["LoadImage", "ModelPatchLoader", "AnimaLLLiteApply"].every((c) => info[c])) throw unavailable("ComfyUI has no Anima LLLite nodes");
+  const patches = info.ModelPatchLoader?.input?.required?.name?.[0];
+  if (!Array.isArray(patches) || !patches.includes(d.adapter)) {
+    let help = "";
+    try {
+      const lib = loadDepthLibrary(o.depthDir, loadPoseCatalog(o.poseCatalogPath));
+      if (lib.ok) help = `\n${adapterInstructions(lib.library)}`;
+    } catch {
+      /* the instructions are a courtesy */
+    }
+    throw new RegenError("DEPTH_UNAVAILABLE", `the Depth adapter ${d.adapter} is not listed by ComfyUI; regenerate without the map or install it${help}`, 409);
+  }
+  // Where an identical copy can come from if ComfyUI does not have it: the library map with this hash, else the saved graph's file.
+  const copy = async (): Promise<Buffer> => {
+    try {
+      const lib = loadDepthLibrary(o.depthDir, loadPoseCatalog(o.poseCatalogPath));
+      const same = lib.ok ? lib.library.maps.find((m) => m.sha256 === cond.mapSha256) : undefined;
+      if (lib.ok && same) return localMap(lib.library, same);
+    } catch {
+      /* fall through to the file in ComfyUI */
+    }
+    const remote = d.imageName ? await remoteInput(client, d.imageName) : null;
+    if (remote && createHash("sha256").update(remote).digest("hex") === cond.mapSha256) return remote;
+    throw new MapIdentityError(`no copy with sha256 ${cond.mapSha256} in the local library or in ComfyUI`);
+  };
+  let image: string;
+  try {
+    image = await ensureMap(client, cond.mapSha256, comfyName({ id: cond.mapId, sha256: cond.mapSha256 }), copy);
+  } catch (e) {
+    throw unavailable(`the depth map cannot be verified in ComfyUI: ${(e as Error).message}`);
+  }
+  const graph = image === d.imageName ? src.graph : setDepthImage(src.graph, image);
+  const kept = { ...cond, comfyImage: image, ...(o.choice === "keep" ? { userDecision: "keep" as const } : {}), ...(conflict ? { conflict: { reason: conflict.reason, ...(conflict.detail ? { detail: conflict.detail } : {}) } } : {}) };
+  return { graph, conditioning: kept };
+}
 
 /**
  * Runs the reserved job once. Never resubmits. A rejected or failed job is recorded as "failed"; if ComfyUI accepted the job
@@ -201,7 +303,7 @@ export async function runRegeneration(opts: { r: Reservation; client: Client; fr
   const { r, client } = opts;
   const rec = r.record;
   const cdir = r.collectionDir;
-  const base = { frame: rec.frame, variant: r.variant, model: rec.model, seed: r.seed, sourceVariant: rec.sourceVariant, promptEdited: r.promptEdited, ...(r.pose ? { pose: r.pose } : {}), positive: r.positive, graph: r.graph };
+  const base = { frame: rec.frame, variant: r.variant, model: rec.model, seed: r.seed, sourceVariant: rec.sourceVariant, promptEdited: r.promptEdited, ...(r.pose ? { pose: r.pose } : {}), ...(r.conditioning ? { conditioning: r.conditioning } : {}), positive: r.positive, graph: r.graph };
   const t0 = Date.now();
   /** Persistence problems after ComfyUI accepted the job: never fatal for the job itself, never a reason to resubmit. */
   const problems: string[] = [];

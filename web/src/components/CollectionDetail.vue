@@ -5,7 +5,7 @@ import { exportUrl, imageUrl, type Collection, type Frame } from "../api";
 import { badgeOf, descriptionOf, exportInfo, isRegenerating, pad2, scenesOf, titleOf, unknownFrames, variantsLine, type Scene } from "../lib";
 import { modelById } from "../models";
 import { AUTO_RU, BAD_TAGS, dateFullRu, effortRu, FIELD_RU, GOOD_TAGS, nPlural, ofImages, optionRu, secondsRu, W } from "../ru";
-import { bestBusy, bestError, chooseBest, draftOf, go, imageFbError, openRegen, rate, regen, run, running, saveNote, toggleTag } from "../store";
+import { bestBusy, bestError, chooseBest, depthReasonRu, draftOf, go, imageFbError, openRegen, rate, regen, run, running, saveNote, toggleTag } from "../store";
 import ImageArena from "./ImageArena.vue";
 import ImageRating from "./ImageRating.vue";
 import RegenerateDialog from "./RegenerateDialog.vue";
@@ -155,6 +155,13 @@ const date = computed(() => dateFullRu(props.c.createdAt));
             <p v-if="f.pose" class="pose" :title="f.pose.description ? `${f.pose.description} — поза, заложенная в промпт; изображение автоматически не проверяется` : 'Поза, заложенная в промпт; изображение автоматически не проверяется'">
               Поза по плану: {{ f.pose.label ?? (f.pose.id === "free" ? "своя (Codex)" : "из библиотеки") }}<template v-if="!f.pose.promptAsPlanned"> · промпт изменён после планирования</template>
             </p>
+            <p v-if="f.conditioning?.mode === 'depth'" class="pose depth" :title="`Карта ${f.conditioning.mapId} · SHA-256 ${f.conditioning.mapSha256.slice(0, 12)}… · адаптер ${f.conditioning.adapter.file} (проверено только наличие в ComfyUI) · strength ${f.conditioning.strength}, ${f.conditioning.startPercent}–${f.conditioning.endPercent}. Карта задаёт силуэт; соответствие позы на изображении автоматически не проверяется.`">
+              Depth-карта применена: {{ f.conditioning.mapId }}<template v-if="f.conditioning.userDecision === 'keep'"> · сохранена при перегенерации</template><template v-if="f.conditioning.conflict"> · промпт расходится с картой</template>
+            </p>
+            <p v-else-if="f.conditioning?.mode === 'text' && 'depthRequested' in f.conditioning" class="pose" :title="f.conditioning.detail ?? ''">
+              Depth не применён: {{ depthReasonRu(f.conditioning.reason) }}
+            </p>
+            <p v-else-if="f.conditioning?.mode === 'text' && 'droppedFrom' in f.conditioning" class="pose">Depth-карта {{ f.conditioning.droppedFrom.mapId }} отключена при перегенерации</p>
           </template>
         </section>
       </div>
@@ -282,6 +289,7 @@ dd { margin: 0; font-size: 14px; }
 details { font-size: 12px; }
 summary { cursor: pointer; color: var(--accent-2); }
 .pose { font-size: 12px; color: var(--muted); }
+.pose.depth { color: var(--accent-2); }
 table { width: 100%; border-collapse: collapse; margin-top: 6px; font-variant-numeric: tabular-nums; }
 td { padding: 3px 4px; border-top: 1px solid var(--line); color: var(--text-2); }
 .pid { word-break: break-all; color: var(--muted); }

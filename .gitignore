@@ -1,5 +1,7 @@
 node_modules/
 output/
+# NS-027: local Depth library (maps derived from POSE-DB-02 must never be committed or redistributed)
+local/
 dist/
 *.log
 .env

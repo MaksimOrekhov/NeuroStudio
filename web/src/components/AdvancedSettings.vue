@@ -1,10 +1,17 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 import { AUTO, COMPOSITION_FIELDS, COMPOSITION_OPTIONS, INHERIT, type CompositionField } from "../../../src/composition";
 import { modelById } from "../models";
 import EvolutionBlock from "./EvolutionBlock.vue";
 import { AUTO_RU, effortRu, FIELD_RU, INHERIT_RU, optionRu } from "../ru";
-import { anyComposition, app, assigned, codexEfforts, codexModels, copySceneToAll, form, guided, resetComposition, resetScene, resolved, sceneOverrides, ui } from "../store";
+import { anyComposition, app, assigned, codexEfforts, codexModels, copySceneToAll, depthActive, depthStatus, depthWarning, form, guided, loadDepthStatus, resetComposition, resetScene, resolved, sceneOverrides, ui } from "../store";
+
+onMounted(() => {
+  if (depthActive.value && !depthStatus.data && !depthStatus.loading) void loadDepthStatus();
+});
+const toggleDepth = (e: Event) => {
+  form.depthMode = (e.target as HTMLInputElement).checked ? "auto" : "off";
+};
 
 const globalLabel = (f: CompositionField) => (form.global[f] === AUTO ? AUTO_RU : optionRu(f, form.global[f]));
 const codexSummary = computed(() => {
@@ -36,6 +43,7 @@ const ownText = (n: number) => (n === 1 ? "1 своя настройка" : `${n
       <span class="sum">
         <span class="chip">Codex: {{ codexSummary }}</span>
         <span class="chip" :class="{ on: form.poseMode === 'auto' }">Позы: {{ form.poseMode === "auto" ? "из библиотеки" : "свободные" }}</span>
+        <span v-if="depthActive" class="chip on">Depth: экспериментально</span>
         <span class="chip" :class="{ on: guided }">Композиция: {{ compSummary }}</span>
       </span>
     </button>
@@ -84,6 +92,13 @@ const ownText = (n: number) => (n === 1 ? "1 своя настройка" : `${n
             <option value="auto">Авто — из библиотеки</option>
           </select>
         </label>
+        <label class="sw" :class="{ off: form.poseMode !== 'auto' }" title="Если Codex выберет позу, для которой есть одобренная карта глубины, и кадр точно совпадает с ней по модели, ракурсу и крупности, карта будет добавлена в граф этого кадра. Иначе кадр генерируется как обычно.">
+          <input type="checkbox" :checked="form.depthMode === 'auto'" :disabled="form.poseMode !== 'auto'" @change="toggleDepth" />
+          <span>Depth-карты (экспериментально)</span>
+        </label>
+        <p v-if="form.poseMode !== 'auto'" class="muted small">Depth-карты доступны только в режиме «Авто — из библиотеки».</p>
+        <p v-else-if="form.depthMode === 'auto'" class="muted small">Карта применяется только к кадрам, которые точно ей соответствуют. Остальные кадры генерируются по тексту, причина видна в деталях изображения.</p>
+        <p v-if="depthWarning" class="note warn pre">{{ depthWarning }}</p>
       </section>
 
       <section class="block">
@@ -181,4 +196,8 @@ select.set { border-color: rgba(124, 108, 255, 0.55); }
 pre { margin: 6px 0 0; white-space: pre-wrap; font: 12px/1.45 ui-monospace, Consolas, monospace; }
 .sbody { padding: 4px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.sw { display: flex; align-items: center; gap: 10px; cursor: pointer; margin-top: 10px; }
+.sw input { width: 18px; height: 18px; accent-color: var(--accent); }
+.sw.off { opacity: 0.55; cursor: default; }
+.pre { white-space: pre-line; }
 </style>

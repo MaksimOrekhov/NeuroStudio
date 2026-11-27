@@ -11,6 +11,7 @@ import { EXAMPLE_CHARS, MAX_TEXT_CHARS, buildMemory, buildPreferenceContext, ext
 import { extractPromptFeatures } from "../server/promptFeatures.ts";
 import { generateBatch, planPrompt } from "../src/codex.ts";
 import { loadWorkflow } from "../src/comfy.ts";
+import { autoMix } from "../src/imageModels.ts";
 import { planV3 } from "./fixtures/strictPlan.ts";
 
 const H = { host: "127.0.0.1:8787" };
@@ -716,7 +717,7 @@ test("NS-024: preview and fake Codex stdin agree for scoped reviews, and off sen
     const baseGraph = await loadWorkflow(fileURLToPath(new URL("../workflows/anima-crimson-oath.api.json", import.meta.url)));
     const transport = await tmp();
     const stdin = join(transport, "stdin.txt");
-    const plan = JSON.stringify({ collections: [planV3("NS024 Mock", [C])] });
+    const plan = JSON.stringify({ collections: [planV3("NS024 Mock", autoMix(1))] });
     const script = `
       const fs = require("node:fs");
       const [capture, plan, ...args] = process.argv.slice(1);

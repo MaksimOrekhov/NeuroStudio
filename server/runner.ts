@@ -2,17 +2,20 @@ import { randomInt } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { CodexSelection } from "../src/codexModels.ts";
-import type { ComfyClient, Graph } from "../src/comfy.ts";
+import { MODELS, applyParams, type ComfyClient, type Graph } from "../src/comfy.ts";
 import type { BatchOptions, BatchResult } from "../src/codex.ts";
 import { resolveComposition, type Composition } from "../src/composition.ts";
-import { buildJobs, runCollection, slugify, type Generation, type Manifest } from "../src/collection.ts";
+import { buildJobs, runCollection, slugify, type FrameDepth, type Generation, type Manifest } from "../src/collection.ts";
+import { parseDepthChoice, type DepthChoice, type DepthMode } from "../src/depth.ts";
+import { DEPTH_DIR, MapIdentityError, adapterInstructions, appliedRecord, decideFrame, depthEnvironment, loadDepthLibrary, textRecord, uploadMap, type DepthEnvironment, type LibraryResult } from "../src/depthLibrary.ts";
+import type { PromptPlan } from "../src/promptPlan.ts";
 import { MAX_FRAMES, autoMix, type ImageModelAssignment, type ImageModelId } from "../src/imageModels.ts";
 import { runErrorCode, type ErrorCode } from "../src/errors.ts";
 import { listCollections } from "./collections.ts";
 import { buildPreferenceContext } from "./promptEvolution.ts";
 import { loadVisualHistory } from "../src/visualHistory.ts";
 import { writeAtomic } from "../src/persistence.ts";
-import { loadSource, parseFrame, parsePositive, parseVariant, frameCountOf, reserve, runRegeneration } from "../src/regenerate.ts";
+import { RegenError, loadSource, parseFrame, parsePositive, parseVariant, frameCountOf, prepareRegenDepth, reserve, runRegeneration } from "../src/regenerate.ts";
 import { anatomyCaution, countPoseUses, framePoseIds, listedIds, loadPoseCatalog, selectPoses, type PoseMode, type PoseSelection } from "../src/poses.ts";
 import { VIEW_HISTORY_COLLECTIONS, viewHistory, viewNote } from "./poseHistory.ts";
 
@@ -47,6 +50,8 @@ export interface RunState {
   evolution?: { enabled: boolean; applied: boolean; reason?: string; error?: string };
   /** NS-026: pose selection mode of this run (absent = free, as before). */
   poseSelection?: PoseMode;
+  /** NS-027: Depth requested for this run (absent = off, as before); warning = why no frame can get a map right now. */
+  depth?: { mode: "auto"; warning?: string };
   /** Ids of collections already saved by this batch. */
   finished: string[];
   /** Original technical message. */
@@ -68,7 +73,8 @@ export class RunError extends Error {
 }
 
 export interface RunnerDeps {
-  client: Pick<ComfyClient, "systemStats" | "checkDependencies" | "submit" | "waitForImages" | "download">;
+  /** objectInfo / uploadImage are needed only for Depth (NS-027); without them Depth falls back to text-only. */
+  client: Pick<ComfyClient, "systemStats" | "checkDependencies" | "submit" | "waitForImages" | "download"> & Partial<Pick<ComfyClient, "objectInfo" | "uploadImage">>;
   /** ONE call for the whole batch. */
   plan: (o: BatchOptions) => Promise<BatchResult>;
   baseGraph: Graph;
@@ -78,6 +84,8 @@ export interface RunnerDeps {
   poseSeed?: () => number;
   /** For tests: another pose catalog file. */
   poseCatalogPath?: string;
+  /** NS-027: local Depth library folder (default local/depth or NEUROSTUDIO_DEPTH_DIR). */
+  depthDir?: string;
   collectionsDir: string;
   batchesDir: string;
   log?: (s: string) => void;
@@ -98,6 +106,15 @@ export interface RunSettings {
   promptEvolution: boolean;
   /** NS-026: "auto" = Codex picks per frame from a catalog sample in the same request; "free" = exactly the pre-NS-026 request. */
   poseSelection: PoseMode;
+  /** NS-027: "auto" = a verified depth map is added to frames that clearly fit it (needs poseSelection "auto"); "off" = as before. */
+  depth: DepthMode;
+}
+
+interface DepthRun {
+  lib: LibraryResult;
+  env: DepthEnvironment | null;
+  /** Map id -> LoadImage value, or the upload error (one attempt per run). */
+  uploads: Map<string, string | Error>;
 }
 
 const deepFreeze = <T>(o: T): T => {
@@ -126,12 +143,14 @@ export class AutopilotRunner {
     images?: ImageModelAssignment,
     promptEvolution = false,
     poseSelection: PoseMode = "free",
+    depth: DepthMode = "off",
   ): Promise<RunState> {
+    if (depth === "auto" && poseSelection !== "auto") throw new RunError("INVALID_GENERATION_SETTINGS", 'depth conditioning needs poseSelection "auto"', 400);
     if (this.busy) throw new RunError("ALREADY_RUNNING", "An Autopilot run is already in progress", 409);
     this.busy = true; // synchronous lock: a concurrent second call cannot pass this line
     const imageModels: ImageModelAssignment = images ?? { mode: "auto", models: autoMix(MAX_FRAMES) as ImageModelId[] };
     const settings: RunSettings = deepFreeze(
-      structuredClone({ theme, collections: count, frames: imageModels.models.length, variations, imageModels, composition, codex, promptEvolution, poseSelection }),
+      structuredClone({ theme, collections: count, frames: imageModels.models.length, variations, imageModels, composition, codex, promptEvolution, poseSelection, depth }),
     );
     try {
       await this.deps.client.systemStats();
@@ -149,6 +168,7 @@ export class AutopilotRunner {
       variations,
       imageModels: settings.imageModels,
       ...(poseSelection === "auto" ? { poseSelection } : {}),
+      ...(depth === "auto" ? { depth: { mode: "auto" as const } } : {}),
       startedAt: new Date().toISOString(),
     };
     void this.execute(settings)
@@ -166,7 +186,7 @@ export class AutopilotRunner {
    * batch or another regeneration runs this throws ALREADY_RUNNING (409). No Codex. Validation and the reservation of the new
    * slot in collection.json finish before this returns; the generation itself runs in the background.
    */
-  async startRegeneration(req: { collectionId: string; frame: unknown; sourceVariant: unknown; positive?: unknown }): Promise<RunState> {
+  async startRegeneration(req: { collectionId: string; frame: unknown; sourceVariant: unknown; positive?: unknown; depth?: unknown }): Promise<RunState> {
     if (this.busy) throw new RunError("ALREADY_RUNNING", "A generation is already in progress", 409);
     this.busy = true; // synchronous lock, shared with start()
     try {
@@ -175,13 +195,21 @@ export class AutopilotRunner {
       const frame = parseFrame(req.frame, await frameCountOf(collectionsDir, id));
       const sourceVariant = parseVariant(req.sourceVariant, "sourceVariant");
       const positive = parsePositive(req.positive);
+      let choice: DepthChoice | undefined;
+      try {
+        choice = parseDepthChoice(req.depth);
+      } catch (e) {
+        throw new RegenError("INVALID_REQUEST", (e as Error).message, 400);
+      }
       const src = await loadSource(collectionsDir, id, frame, sourceVariant);
       try {
         await this.deps.client.systemStats();
       } catch (e) {
         throw new RunError("COMFY_UNREACHABLE", `ComfyUI is not reachable: ${(e as Error).message}. Start ComfyUI and try again.`, 503);
       }
-      const r = await reserve(collectionsDir, id, src, positive);
+      // NS-027: keep/drop the source's depth map is settled BEFORE the new slot is reserved (a conflict reserves nothing).
+      const depth = await prepareRegenDepth({ src, positive, choice, client: this.deps.client, depthDir: this.deps.depthDir ?? DEPTH_DIR, poseCatalogPath: this.deps.poseCatalogPath });
+      const r = await reserve(collectionsDir, id, src, positive, depth);
       this.state = {
         ...idle(),
         status: "generating",
@@ -212,8 +240,67 @@ export class AutopilotRunner {
     }
   }
 
+  /** NS-027: loads the library and asks ComfyUI (once) whether the Depth nodes and the adapter are there. Never throws. */
+  private async prepareDepth(generation: Generation, batch: { depth: unknown }): Promise<DepthRun> {
+    let lib: LibraryResult;
+    try {
+      lib = loadDepthLibrary(this.deps.depthDir ?? DEPTH_DIR, loadPoseCatalog(this.deps.poseCatalogPath));
+    } catch (e) {
+      lib = { ok: false, error: (e as Error).message };
+    }
+    const env = lib.ok ? await depthEnvironment(this.deps.client, lib.library.adapter.file) : null;
+    generation.depth = { mode: "auto", libraryVersion: lib.ok ? lib.library.version : null };
+    const warning = !lib.ok ? lib.error : !env?.nodes ? `ComfyUI has no Anima LLLite nodes${env?.error ? `: ${env.error}` : ""}` : !env.adapter ? adapterInstructions(lib.library) : undefined;
+    batch.depth = {
+      mode: "auto",
+      library: lib.ok
+        ? { available: true, version: lib.library.version, adapter: lib.library.adapter.file, maps: lib.library.maps.map((m) => ({ id: m.id, poseId: m.poseId, status: m.status, sha256: m.sha256 })), excluded: lib.library.excluded }
+        : { available: false, error: lib.error },
+      environment: env && { ...env, check: "listed-by-comfyui" },
+      collections: [],
+    };
+    this.state = { ...this.state, depth: { mode: "auto", ...(warning ? { warning } : {}) } };
+    return { lib, env, uploads: new Map() };
+  }
+
+  /**
+   * NS-027: one decision per plan frame (shared by its seed variants). A map is uploaded once per run, before any job that uses it is
+   * submitted; any problem up to that point means text-only generation for that frame, with the reason recorded.
+   */
+  private async decideDepth(plan: PromptPlan, composition: Composition | undefined, frames: number, run: DepthRun): Promise<FrameDepth> {
+    const req = resolveComposition(composition, frames);
+    const out: FrameDepth = new Map();
+    for (const f of plan.frames) {
+      const probe = applyParams(this.deps.baseGraph, { positive: f.positive, negative: f.negative, seed: 0, unet: MODELS[f.model] });
+      const d = decideFrame({ poseId: f.poseId, model: f.model, positive: f.positive, requirements: req[f.frame - 1] ?? {}, graph: probe }, run.lib, run.env);
+      if (!d.ok || !run.lib.ok) {
+        out.set(f.frame, { conditioning: d.ok ? textRecord("library-unavailable") : textRecord(d.reason, d.detail) });
+        continue;
+      }
+      const lib = run.lib.library;
+      let image = run.uploads.get(d.entry.id);
+      if (image === undefined) {
+        try {
+          image = await uploadMap(this.deps.client, lib, d.entry);
+        } catch (e) {
+          image = e as Error;
+        }
+        run.uploads.set(d.entry.id, image);
+      }
+      if (image instanceof Error) {
+        out.set(f.frame, { conditioning: textRecord(image instanceof MapIdentityError ? "map-unverified" : "upload-failed", image.message) });
+        continue;
+      }
+      out.set(f.frame, {
+        conditioning: appliedRecord(lib, d.entry, f.poseId!, f.model, image),
+        params: { image, adapter: lib.adapter.file, strength: d.entry.depth.strength, startPercent: d.entry.depth.startPercent, endPercent: d.entry.depth.endPercent },
+      });
+    }
+    return out;
+  }
+
   private async execute(cfg: RunSettings) {
-    const { theme, collections: count, frames, variations, imageModels, composition, codex: sel, promptEvolution, poseSelection } = cfg;
+    const { theme, collections: count, frames, variations, imageModels, composition, codex: sel, promptEvolution, poseSelection, depth } = cfg;
     const { collectionsDir, batchesDir, log } = this.deps;
     const resolved = composition ? resolveComposition(composition, frames) : null;
     const generation: Generation = { theme: theme ?? null, imageModels, composition: resolved };
@@ -241,6 +328,7 @@ export class AutopilotRunner {
       errorCode: undefined as ErrorCode | undefined,
       plans: [] as unknown[],
       poseSelection: undefined as PoseSelection | undefined,
+      depth: undefined as unknown,
     };
     const saveBatch = () => writeAtomic(join(batchDir, "batch-plan.json"), JSON.stringify(batch, null, 2));
     try {
@@ -307,6 +395,10 @@ export class AutopilotRunner {
         generation.pose = { mode: "auto", catalogVersion: catalog.version };
         await saveBatch(); // the sample is on disk before Codex sees it
       }
+      // NS-027: the library and ComfyUI's Depth support are checked before Codex (and recorded), but change nothing in its request.
+      const depthRun = depth === "auto" ? await this.prepareDepth(generation, batch) : undefined;
+      if (depthRun) await saveBatch();
+
       const r = await this.deps.plan({ theme, avoid, count, composition, models: imageModels.models, model: sel.model, reasoningEffort: sel.reasoningEffort, ...(preferences ? { preferences } : {}), ...(history ? { history } : {}), ...(poses ? { poses } : {}) }); // all plans are validated before any GPU work
       codexMeta.seconds = r.ms / 1000;
       codexMeta.tokens = r.tokens;
@@ -320,9 +412,14 @@ export class AutopilotRunner {
         this.state = { ...this.state, status: "generating", collectionId: id, title: plan.concept.title, collection: i + 1, currentFrame: undefined };
         batch.collectionIds.push(id);
         await saveBatch();
+        const frameDepth = depthRun ? await this.decideDepth(plan, composition, frames, depthRun) : undefined;
+        if (frameDepth) {
+          (batch.depth as { collections: unknown[] }).collections.push({ collectionId: id, frames: [...frameDepth].map(([frame, d]) => ({ frame, ...d.conditioning })) });
+          await saveBatch(); // the decisions are on disk before the first job of this collection is submitted
+        }
         await runCollection({
           plan,
-          jobs: buildJobs(plan, this.deps.baseGraph, slug, variations, poses?.catalogVersion),
+          jobs: buildJobs(plan, this.deps.baseGraph, slug, variations, poses?.catalogVersion, frameDepth),
           dir: join(collectionsDir, id),
           client: this.deps.client,
           codex: { ...codexMeta, seconds: r.ms / 1000 },
