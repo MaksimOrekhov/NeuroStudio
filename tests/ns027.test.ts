@@ -3,7 +3,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,9 +13,9 @@ import { readCollection } from "../server/collections.ts";
 import { poseStats } from "../server/promptEvolution.ts";
 import { AutopilotRunner, RunError, type RunnerDeps } from "../server/runner.ts";
 import { batchSchema, planSchema } from "../src/codex.ts";
-import { DEPTH_NODES, FIELDS, MODELS, applyDepth, applyParams, boosterOff, depthOf, graphImageSize, loadWorkflow, removeDepth, type Graph } from "../src/comfy.ts";
+import { ComfyClient, DEPTH_NODES, FIELDS, MODELS, applyDepth, applyParams, boosterOff, depthOf, graphImageSize, loadWorkflow, removeDepth, type Graph } from "../src/comfy.ts";
 import { DEPTH_REASONS, parseDepthMode, promptMismatch, readConditioning, readPrompt, type DepthReason, type DepthSpec } from "../src/depth.ts";
-import { COMFY_SUBFOLDER, comfyName, decideFrame, loadDepthLibrary, pngSize, safeMapPath, type DepthEnvironment, type LibraryResult } from "../src/depthLibrary.ts";
+import { COMFY_PREFIX, MapIdentityError, comfyName, ensureMap, decideFrame, loadDepthLibrary, pngSize, safeMapPath, type DepthEnvironment, type LibraryResult } from "../src/depthLibrary.ts";
 import { AUTO_MIX_MODELS, IMAGE_MODELS, MODEL_IDS, autoMix, resolveImageModels } from "../src/imageModels.ts";
 import { loadPoseCatalog } from "../src/poses.ts";
 import { validatePlan, type PromptPlan } from "../src/promptPlan.ts";
@@ -212,7 +213,7 @@ test("decision: every reason for text-only generation is reachable and reported"
   const wide: DepthSpec = { ...SPEC, crops: ["head_to_mid_thigh", "knee_up"] };
   assert.equal(promptMismatch(wide, GOOD, { framing: "knee_up" })?.reason, "composition-conflict");
   assert.equal(promptMismatch(wide, GOOD, { framing: "head_to_mid_thigh" }), null);
-  const seen = new Set<string>([...cases.map((c) => c[2]), "composition-conflict", "upload-failed" /* runner test below */]);
+  const seen = new Set<string>([...cases.map((c) => c[2]), "composition-conflict", "upload-failed", "map-unverified" /* runner tests below */, "gesture-mismatch", "gesture-unclear" /* gesture test below */]);
   assert.deepEqual(DEPTH_REASONS.filter((r) => !seen.has(r)), []);
 });
 
@@ -241,7 +242,7 @@ test("hand side: unspecified lets the map decide; the same side passes; an oppos
   assert.equal(r("her left hand on her hip"), "hand-side-conflict");
   assert.equal(r("her right arm hanging loosely by her side, one hand on her hip"), "hand-side-conflict");
   assert.equal(r("hand on hip on the right side of the image"), "hand-side-conflict");
-  assert.equal(r("both hands on her hips"), "hand-side-conflict");
+  assert.equal(r("both hands on her hips"), "gesture-mismatch");
   assert.equal(r("her right hand on her hip, her left hand on her waist"), "hand-side-ambiguous");
 });
 
@@ -251,7 +252,7 @@ test("graph: Depth nodes go into a copy between the model switch and KSampler; r
   const job = applyParams(base, { positive: GOOD, seed: 7 });
   const before = structuredClone(job);
   const baseBefore = JSON.stringify(base);
-  const g = applyDepth(job, { image: `${COMFY_SUBFOLDER}/m.png`, adapter: ADAPTER.file, strength: 1, startPercent: 0, endPercent: 1 });
+  const g = applyDepth(job, { image: "neurostudio-depth-m.png", adapter: ADAPTER.file, strength: 1, startPercent: 0, endPercent: 1 });
   assert.deepEqual(job, before, "input graph untouched");
   assert.equal(JSON.stringify(base), baseBefore, "base workflow untouched");
   assert.deepEqual(g[FIELDS.seed.node].inputs.model, [DEPTH_NODES.apply, 0]);
@@ -259,10 +260,10 @@ test("graph: Depth nodes go into a copy between the model switch and KSampler; r
     class_type: "AnimaLLLiteApply",
     inputs: { model: ["90:84", 0], model_patch: [DEPTH_NODES.patch, 0], image: [DEPTH_NODES.image, 0], strength: 1, start_percent: 0, end_percent: 1 },
   });
-  assert.deepEqual(g[DEPTH_NODES.image], { class_type: "LoadImage", inputs: { image: `${COMFY_SUBFOLDER}/m.png` } });
+  assert.deepEqual(g[DEPTH_NODES.image], { class_type: "LoadImage", inputs: { image: "neurostudio-depth-m.png" } });
   assert.deepEqual(g[DEPTH_NODES.patch], { class_type: "ModelPatchLoader", inputs: { name: ADAPTER.file } });
   assert.equal(Object.keys(g).length, Object.keys(job).length + 3);
-  assert.deepEqual(depthOf(g), { apply: DEPTH_NODES.apply, image: DEPTH_NODES.image, imageName: `${COMFY_SUBFOLDER}/m.png`, patch: DEPTH_NODES.patch, adapter: ADAPTER.file });
+  assert.deepEqual(depthOf(g), { apply: DEPTH_NODES.apply, image: DEPTH_NODES.image, imageName: "neurostudio-depth-m.png", patch: DEPTH_NODES.patch, adapter: ADAPTER.file });
   assert.deepEqual(removeDepth(g), job, "drop restores exactly the original graph");
   assert.throws(() => applyDepth(g, { image: "x", adapter: "y", strength: 1, startPercent: 0, endPercent: 1 }), /already has Depth/);
   assert.throws(() => removeDepth(job), /no Depth nodes/);
@@ -291,37 +292,66 @@ function planWith(frames: { model: string; poseId?: string; positive: string }[]
 }
 
 interface Fake {
+  /** A real folder standing in for ComfyUI's input/ directory. */
+  input: string;
   uploads: { name: string; subfolder: string; bytes: number }[];
+  /** /view?type=input reads (identity checks). */
+  reads: string[];
   submits: Graph[];
   infoCalls: number;
-  images: string[];
   adapter: boolean;
   uploadFails: boolean;
 }
+
+/** ComfyUI 0.46.3 LoadImage.INPUT_TYPES: os.listdir(input_dir), files only, image types: NOTHING from subfolders. */
+function loadImageOptions(input: string): string[] {
+  return readdirSync(input)
+    .filter((f) => statSync(join(input, f)).isFile() && /\.(png|jpe?g|webp|gif|bmp)$/i.test(f))
+    .sort();
+}
+const CLASSES = [...new Set([...Object.values(base).map((n) => n.class_type), "AnimaLLLiteApply"])];
+
+/**
+ * A fake ComfyUI over a real input folder, following its source: LoadImage lists the input root only; /upload/image never overwrites
+ * (identical bytes keep the name, different bytes get "name (1).png"); /view?type=input returns the raw bytes. checkDependencies is
+ * the REAL ComfyClient.checkDependencies over this object_info.
+ */
 function fakeClient(f: Fake) {
   let n = 0;
+  const objectInfo = async () => {
+    f.infoCalls++;
+    const info: Record<string, any> = Object.fromEntries(CLASSES.map((c) => [c, { input: { required: {} } }]));
+    info.LoadImage = { input: { required: { image: [loadImageOptions(f.input), { image_upload: true }] } } };
+    info.ModelPatchLoader = { input: { required: { name: [f.adapter ? [ADAPTER.file] : []] } } };
+    return info;
+  };
   return {
     systemStats: async () => ({ system: { comfyui_version: "mock" }, devices: [] }),
-    checkDependencies: async () => [],
+    objectInfo,
+    checkDependencies: (g: Graph) => ComfyClient.prototype.checkDependencies.call({ objectInfo } as never, g),
     submit: async (g: Graph) => {
       f.submits.push(structuredClone(g));
       return `p-${++n}`;
     },
     waitForImages: async () => ({ images: [{ filename: "x.png", subfolder: "", type: "output" }], history: {} }),
-    download: async () => Buffer.from("png"),
-    objectInfo: async () => {
-      f.infoCalls++;
-      return {
-        LoadImage: { input: { required: { image: [f.images] } } },
-        ModelPatchLoader: { input: { required: { name: [f.adapter ? [ADAPTER.file] : []] } } },
-        AnimaLLLiteApply: { input: { required: {} } },
-      };
+    download: async (img: { filename: string; subfolder: string; type: string }) => {
+      if (img.type !== "input") return Buffer.from("png");
+      f.reads.push(`${img.subfolder}|${img.filename}`);
+      return readFileSync(join(f.input, img.subfolder, img.filename)); // throws when missing, like a 404
     },
     uploadImage: async (buf: Buffer, name: string, subfolder: string) => {
       if (f.uploadFails) throw new Error("upload refused");
-      f.uploads.push({ name, subfolder, bytes: buf.length });
-      f.images.push(`${subfolder}/${name}`);
-      return { name, subfolder, type: "input" };
+      const folder = join(f.input, subfolder);
+      mkdirSync(folder, { recursive: true });
+      const dot = name.lastIndexOf(".");
+      let file = name;
+      for (let i = 1; existsSync(join(folder, file)); i++) {
+        if (readFileSync(join(folder, file)).equals(buf)) break; // compare_image_hash: same content keeps the name
+        file = `${name.slice(0, dot)} (${i})${name.slice(dot)}`;
+      }
+      if (!existsSync(join(folder, file))) writeFileSync(join(folder, file), buf);
+      f.uploads.push({ name: file, subfolder, bytes: buf.length });
+      return { name: file, subfolder, type: "input" };
     },
   };
 }
@@ -330,7 +360,9 @@ async function env(o: { depthDir?: string; plan?: PromptPlan; adapter?: boolean;
   const dir = await tmp();
   const batchesDir = join(dir, "_batches");
   const depthDir = o.depthDir ?? (await goodLibrary());
-  const f: Fake = { uploads: [], submits: [], infoCalls: 0, images: [], adapter: o.adapter ?? true, uploadFails: o.uploadFails ?? false };
+  const input = join(dir, "_comfy_input");
+  await mkdir(input, { recursive: true });
+  const f: Fake = { input, uploads: [], reads: [], submits: [], infoCalls: 0, adapter: o.adapter ?? true, uploadFails: o.uploadFails ?? false };
   const plan =
     o.plan ??
     planWith([
@@ -373,7 +405,9 @@ test("Depth on: one Codex call; the matching frame and all its seed variants get
   assert.equal(JSON.stringify(e.calls[0]).includes("depth"), false, "nothing about Depth goes to Codex");
   assert.ok(e.baseUnchanged(), "the base workflow is never mutated");
   const name = comfyName({ id: "nd-p25-fq-h2mt-01", sha256: sha(MAP) });
-  assert.deepEqual(e.f.uploads, [{ name, subfolder: COMFY_SUBFOLDER, bytes: MAP.length }], "the map is uploaded once per run");
+  assert.deepEqual(e.f.uploads, [{ name, subfolder: "", bytes: MAP.length }], "the map is uploaded once per run, into the input root");
+  assert.ok(name.startsWith(COMFY_PREFIX) && !name.includes("/"));
+  assert.deepEqual(e.f.reads, [`|${name}`], "the stored file is read back and hashed after the upload");
   assert.equal(e.f.submits.length, 4);
 
   const id = await e.collection();
@@ -391,8 +425,8 @@ test("Depth on: one Codex call; the matching frame and all its seed variants get
       assert.equal(fr.conditioning.model, V02);
       assert.deepEqual(fr.conditioning.adapter, { file: ADAPTER.file, expectedSha256: ADAPTER.sha256, check: "listed-by-comfyui" });
       assert.deepEqual([fr.conditioning.strength, fr.conditioning.startPercent, fr.conditioning.endPercent], [1, 0, 1]);
-      assert.equal(fr.conditioning.comfyImage, `${COMFY_SUBFOLDER}/${name}`);
-      assert.equal(side.graph[DEPTH_NODES.image].inputs.image, `${COMFY_SUBFOLDER}/${name}`);
+      assert.equal(fr.conditioning.comfyImage, name);
+      assert.equal(side.graph[DEPTH_NODES.image].inputs.image, name);
       assert.deepEqual(side.graph[FIELDS.seed.node].inputs.model, [DEPTH_NODES.apply, 0]);
     } else {
       assert.deepEqual(fr.conditioning, { mode: "text", depthRequested: true, reason: "view-mismatch", detail: "prompt view direct_front_view" });
@@ -444,7 +478,9 @@ test("Depth off (default): no library read, no ComfyUI probe, no upload, and not
   await e.settle();
   assert.equal(e.runner.state.status, "completed", e.runner.state.error);
   assert.equal(e.runner.state.depth, undefined);
-  assert.equal(e.f.infoCalls, 0);
+  assert.equal(e.f.infoCalls, 2, "object_info only for the usual dependency check, once per model");
+  assert.deepEqual(e.f.reads, [], "no map is read back");
+  assert.deepEqual(readdirSync(e.f.input), [], "nothing put into ComfyUI input");
   assert.equal(e.f.uploads.length, 0);
   assert.equal(e.calls.length, 1);
   const id = await e.collection();
@@ -555,17 +591,18 @@ test("regeneration: an edited prompt that conflicts with the map needs an explic
 test("regeneration: a map missing in ComfyUI is uploaded again only from the library entry with the same sha256", async () => {
   const { e, regen, sidecar } = await depthCollection();
   const name = comfyName({ id: "nd-p25-fq-h2mt-01", sha256: sha(MAP) });
-  e.f.images.length = 0; // ComfyUI lost its input folder
+  await rm(join(e.f.input, name)); // ComfyUI lost its input file
   e.f.uploads.length = 0;
   assert.equal((await regen({})).statusCode, 202);
-  assert.deepEqual(e.f.uploads.map((u) => [u.subfolder, u.name]), [[COMFY_SUBFOLDER, name]], "same name, same content");
-  assert.equal((await sidecar(2)).graph[DEPTH_NODES.image].inputs.image, `${COMFY_SUBFOLDER}/${name}`);
+  assert.deepEqual(e.f.uploads.map((u) => [u.subfolder, u.name]), [["", name]], "same name, same content");
+  assert.equal((await sidecar(2)).graph[DEPTH_NODES.image].inputs.image, name);
+  assert.equal(sha(readFileSync(join(e.f.input, name))), sha(MAP));
 
   // the library no longer has a map with that hash: refused, never replaced by another map
   const other = png(1440, 2176, "another map");
   await writeFile(join(e.depthDir, "maps", "nd-p25.png"), other);
   await writeFile(join(e.depthDir, "library.json"), JSON.stringify({ version: 1, adapter: ADAPTER, maps: [entry({ sha256: sha(other) })] }));
-  e.f.images.length = 0;
+  await rm(join(e.f.input, name));
   const r = await regen({});
   assert.equal(r.statusCode, 409);
   assert.equal(r.json().code, "DEPTH_UNAVAILABLE");
@@ -675,5 +712,138 @@ test("old collections made with crimson-oath (v0.2) still read and regenerate wi
   const side = JSON.parse(await readFile(join(e.dir, id, "scene-01-v02.json"), "utf8"));
   assert.equal(side.model, V02);
   assert.equal(side.graph["90:78"].inputs.unet_name, "vetehineCrimsonOathILL_v02ANM.safetensors");
+  await e.app.close();
+});
+
+// ---------- review fixes: LoadImage lists only input/, map identity by SHA-256, gesture of the map ----------
+
+test("LoadImage (ComfyUI 0.46.3) lists only files directly in input/: a subfolder map fails the dependency check, a root map passes", async () => {
+  const input = await tmp();
+  const f: Fake = { input, uploads: [], reads: [], submits: [], infoCalls: 0, adapter: true, uploadFails: false };
+  const c = fakeClient(f);
+  mkdirSync(join(input, "neurostudio-depth"), { recursive: true });
+  writeFileSync(join(input, "neurostudio-depth", "old.png"), MAP);
+  writeFileSync(join(input, `${COMFY_PREFIX}new.png`), MAP);
+  const job = applyParams(base, { positive: GOOD, seed: 1 });
+  const nested = applyDepth(job, { image: "neurostudio-depth/old.png", adapter: ADAPTER.file, strength: 1, startPercent: 0, endPercent: 1 });
+  const root = applyDepth(job, { image: `${COMFY_PREFIX}new.png`, adapter: ADAPTER.file, strength: 1, startPercent: 0, endPercent: 1 });
+  assert.deepEqual(loadImageOptions(input), [`${COMFY_PREFIX}new.png`], "os.listdir of the root, files only");
+  assert.match((await c.checkDependencies(nested)).join("\n"), /"neurostudio-depth\/old\.png" not in available options/);
+  assert.deepEqual(await c.checkDependencies(root), []);
+});
+
+test("map identity: a different file under the map's name in ComfyUI is never used or overwritten; an identical one is reused after a hash check", async () => {
+  const name = comfyName({ id: "nd-p25-fq-h2mt-01", sha256: sha(MAP) });
+  const foreign = png(1440, 2176, "someone else's file");
+  const e = await env();
+  writeFileSync(join(e.f.input, name), foreign);
+  await start(e, { frames: 2, poseSelection: "auto", depthConditioning: "auto", imageModels: { mode: "custom", perScene: [V02, "duskrose"] } });
+  await e.settle();
+  assert.equal(e.runner.state.status, "completed", e.runner.state.error);
+  const m = JSON.parse(await readFile(join(e.dir, await e.collection(), "collection.json"), "utf8"));
+  assert.equal(m.frames[0].conditioning.reason, "map-unverified");
+  assert.match(m.frames[0].conditioning.detail, /left as it is and not used/);
+  assert.ok(readFileSync(join(e.f.input, name)).equals(foreign), "the foreign file is untouched");
+  assert.deepEqual(e.f.uploads, [], "nothing uploaded next to it");
+  assert.ok(e.f.submits.every((g) => !depthOf(g)));
+
+  // the identical file already in ComfyUI (from an earlier run): read back, hashed, reused without an upload
+  const r = await env();
+  writeFileSync(join(r.f.input, name), MAP);
+  await start(r, { frames: 2, poseSelection: "auto", depthConditioning: "auto", imageModels: { mode: "custom", perScene: [V02, "duskrose"] } });
+  await r.settle();
+  const m2 = JSON.parse(await readFile(join(r.dir, await r.collection(), "collection.json"), "utf8"));
+  assert.equal(m2.frames[0].conditioning.mode, "depth");
+  assert.deepEqual(r.f.uploads, []);
+  assert.deepEqual(r.f.reads, [`|${name}`]);
+  await e.app.close();
+  await r.app.close();
+});
+
+test("map identity: ensureMap refuses a rename by ComfyUI, a bad read-back and a client that cannot read input files", async () => {
+  const name = `${COMFY_PREFIX}x.png`;
+  const info = async () => ({ LoadImage: { input: { required: { image: [[]] } } } });
+  const bytes = async () => MAP;
+  const renamed = { objectInfo: info, uploadImage: async () => ({ name: `${COMFY_PREFIX}x (1).png`, subfolder: "", type: "input" }), download: async () => MAP };
+  await assert.rejects(ensureMap(renamed as never, sha(MAP), name, bytes), (e: unknown) => e instanceof MapIdentityError && /not overwritten/.test((e as Error).message));
+  const corrupt = { objectInfo: info, uploadImage: async () => ({ name, subfolder: "", type: "input" }), download: async () => png(1, 1, "broken") };
+  await assert.rejects(ensureMap(corrupt as never, sha(MAP), name, bytes), (e: unknown) => e instanceof MapIdentityError && /after the upload/.test((e as Error).message));
+  await assert.rejects(ensureMap({ objectInfo: info } as never, sha(MAP), name, bytes), MapIdentityError);
+  const local = { objectInfo: info, uploadImage: async () => ({ name, subfolder: "", type: "input" }), download: async () => MAP };
+  await assert.rejects(ensureMap(local as never, sha(MAP), name, async () => png(2, 2, "wrong local copy")), /local copy/);
+  assert.equal(await ensureMap(local as never, sha(MAP), name, bytes), name);
+});
+
+test("regeneration: a graph saved with the old subfolder path is read and moved to the verified root copy of the same map", async () => {
+  const { e, id, regen, sidecar } = await depthCollection();
+  const name = comfyName({ id: "nd-p25-fq-h2mt-01", sha256: sha(MAP) });
+  // simulate a variant saved by the first Stage B commit: LoadImage -> neurostudio-depth/<old name>
+  const srcPath = join(e.dir, id, "scene-01.json");
+  const src = JSON.parse(await readFile(srcPath, "utf8"));
+  const legacy = `neurostudio-depth/nd-p25-fq-h2mt-01-${sha(MAP).slice(0, 12)}.png`;
+  src.graph[DEPTH_NODES.image].inputs.image = legacy;
+  src.conditioning.comfyImage = legacy;
+  await writeFile(srcPath, JSON.stringify(src));
+  mkdirSync(join(e.f.input, "neurostudio-depth"), { recursive: true });
+  writeFileSync(join(e.f.input, legacy), MAP);
+  await rm(join(e.f.input, name));
+  // the library no longer has the map: the identical copy comes from the file the old graph points to (hash-checked)
+  await writeFile(join(e.depthDir, "library.json"), JSON.stringify({ version: 1, adapter: ADAPTER, maps: [] }));
+  assert.equal((await regen({})).statusCode, 202);
+  const v2 = await sidecar(2);
+  assert.equal(v2.graph[DEPTH_NODES.image].inputs.image, name, "now a root file LoadImage lists");
+  assert.equal(v2.conditioning.comfyImage, name);
+  assert.equal(v2.conditioning.mapSha256, sha(MAP), "the same map, only its location changed");
+  assert.ok(readFileSync(join(e.f.input, name)).equals(MAP));
+  assert.ok(readFileSync(join(e.f.input, legacy)).equals(MAP), "the old file is left in place");
+  assert.equal(JSON.parse(await readFile(srcPath, "utf8")).graph[DEPTH_NODES.image].inputs.image, legacy, "the source sidecar is not rewritten");
+  await e.app.close();
+});
+
+test("regeneration: a foreign file under the map's name in ComfyUI makes keep refuse (409), the file is not overwritten", async () => {
+  const { e, regen, manifest } = await depthCollection();
+  const name = comfyName({ id: "nd-p25-fq-h2mt-01", sha256: sha(MAP) });
+  const foreign = png(1440, 2176, "replaced by someone");
+  writeFileSync(join(e.f.input, name), foreign);
+  const r = await regen({});
+  assert.equal(r.statusCode, 409);
+  assert.equal(r.json().code, "DEPTH_UNAVAILABLE");
+  assert.match(r.json().error, /cannot be verified/);
+  assert.ok(readFileSync(join(e.f.input, name)).equals(foreign));
+  assert.equal((await manifest()).frames.length, 1, "nothing reserved");
+  assert.equal((await regen({ depth: "drop" })).statusCode, 202, "drop still works");
+  await e.app.close();
+});
+
+test("gesture: the ND-P25 map needs exactly one hand on the hip (her right one when a side is named)", async () => {
+  const pose = (t: string) => withPose(`standing in a relaxed contrapposto, ${t}, looking at the viewer,`);
+  const r = (t: string) => promptMismatch(SPEC, pose(t))?.reason ?? null;
+  assert.equal(r("one hand on her hip with the elbow out"), null, "one hand, side not named");
+  assert.equal(r("her right hand resting on her waist"), null);
+  assert.equal(r("her left hand on her hip"), "hand-side-conflict");
+  assert.equal(r("both hands on her hips"), "gesture-mismatch");
+  assert.equal(r("hands on hips"), "gesture-mismatch");
+  assert.equal(r("arms relaxed at her sides"), "gesture-mismatch", "both arms down");
+  assert.equal(r("both arms hanging down"), "gesture-mismatch");
+  assert.equal(r("arms crossed under her chest"), "gesture-mismatch");
+  assert.equal(r("arms folded"), "gesture-mismatch");
+  assert.equal(r("hands in her coat pockets"), "gesture-mismatch");
+  assert.equal(r("one hand on her hip, the other hand in her pocket"), "gesture-mismatch");
+  assert.equal(r("no hand on her hip"), "gesture-mismatch", "explicit negation");
+  assert.equal(r("without a hand on her waist, arms loose"), "gesture-mismatch");
+  assert.equal(r("holding a glass of wine"), "gesture-unclear", "the arms cannot be placed");
+  assert.equal(promptMismatch(SPEC, GOOD), null, "the Stage A prompt (right hand on hip, left arm hanging) fits");
+  // a run: text-only with the reason
+  const lib = loadDepthLibrary(await goodLibrary(), catalog);
+  const d = decideFrame(frame({ positive: pose("arms crossed loosely") }), lib, ENV_OK);
+  assert.equal(d.ok ? "applied" : d.reason, "gesture-mismatch");
+  // regeneration: an edit that changes the gesture is a conflict that needs an explicit choice
+  const { e, regen, manifest } = await depthCollection();
+  const crossed = GOOD.replace("her right hand resting flat on her hip with the fingers together and the elbow out, a clear gap between the bent elbow and her waist, her left arm hanging loosely at her side with soft relaxed fingers", "arms crossed under her chest");
+  const res = await regen({ positive: crossed });
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.json().code, "DEPTH_CONFLICT");
+  assert.match(res.json().error, /gesture-mismatch/);
+  assert.equal((await manifest()).frames.length, 1);
   await e.app.close();
 });

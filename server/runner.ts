@@ -7,7 +7,7 @@ import type { BatchOptions, BatchResult } from "../src/codex.ts";
 import { resolveComposition, type Composition } from "../src/composition.ts";
 import { buildJobs, runCollection, slugify, type FrameDepth, type Generation, type Manifest } from "../src/collection.ts";
 import { parseDepthChoice, type DepthChoice, type DepthMode } from "../src/depth.ts";
-import { DEPTH_DIR, adapterInstructions, appliedRecord, decideFrame, depthEnvironment, loadDepthLibrary, textRecord, uploadMap, type DepthEnvironment, type LibraryResult } from "../src/depthLibrary.ts";
+import { DEPTH_DIR, MapIdentityError, adapterInstructions, appliedRecord, decideFrame, depthEnvironment, loadDepthLibrary, textRecord, uploadMap, type DepthEnvironment, type LibraryResult } from "../src/depthLibrary.ts";
 import type { PromptPlan } from "../src/promptPlan.ts";
 import { MAX_FRAMES, autoMix, type ImageModelAssignment, type ImageModelId } from "../src/imageModels.ts";
 import { runErrorCode, type ErrorCode } from "../src/errors.ts";
@@ -288,7 +288,7 @@ export class AutopilotRunner {
         run.uploads.set(d.entry.id, image);
       }
       if (image instanceof Error) {
-        out.set(f.frame, { conditioning: textRecord("upload-failed", image.message) });
+        out.set(f.frame, { conditioning: textRecord(image instanceof MapIdentityError ? "map-unverified" : "upload-failed", image.message) });
         continue;
       }
       out.set(f.frame, {

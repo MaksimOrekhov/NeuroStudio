@@ -51,7 +51,7 @@ interface Spec {
 const FAKE_DEPTH = {
   mode: "depth", mapId: "nd-p25-fq-h2mt-01", mapSha256: "d9edd45bd55ff11fed07073ec87e563093f8546f64aa266b6b69e19e2d9bc0b0", poseId: "ND-P25", model: "crimson-oath",
   adapter: { file: "anima-lllite-depth-1.safetensors", expectedSha256: "81357e51cd59874b4fbdda1eb3117aa73eafe36cc7efb9cf80a152d6bc8d0602", check: "listed-by-comfyui" },
-  strength: 1, startPercent: 0, endPercent: 1, libraryVersion: 1, comfyImage: "neurostudio-depth/nd-p25-fq-h2mt-01-d9edd45bd55f.png",
+  strength: 1, startPercent: 0, endPercent: 1, libraryVersion: 1, comfyImage: "neurostudio-depth-nd-p25-fq-h2mt-01-d9edd45bd55f.png",
   spec: { views: ["front_three_quarter_view"], crops: ["head_to_mid_thigh"], viewpoints: ["eye_level"], poses: ["standing_with_weight_on_one_leg", "standing_naturally"], posture: "standing", handOnHip: { anatomical: "right", image: "left" } },
 };
 const FAKE_TEXT = { mode: "text", depthRequested: true, reason: "view-mismatch", detail: "prompt view direct_front_view" };

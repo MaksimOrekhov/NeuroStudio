@@ -137,6 +137,15 @@ export function depthOf(graph: Graph): { apply: string; image?: string; patch?: 
   };
 }
 
+/** A copy whose Depth LoadImage points to `image` (used only for a file verified to have the same SHA-256 as before). */
+export function setDepthImage(graph: Graph, image: string): Graph {
+  const g = structuredClone(graph);
+  const d = depthOf(g);
+  if (!d?.image) throw new WorkflowError("the graph has no Depth LoadImage node");
+  g[d.image].inputs.image = image;
+  return g;
+}
+
 /**
  * Returns a copy without the Depth nodes: KSampler.model is linked back to the model AnimaLLLiteApply received (the original link).
  * The LoadImage / ModelPatchLoader nodes are removed only when nothing else uses them.

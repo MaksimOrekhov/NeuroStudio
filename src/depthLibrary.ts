@@ -12,8 +12,13 @@ import { FREE_POSE, type PoseCatalog } from "./poses.ts";
 /** Default library folder (git-ignored). NEUROSTUDIO_DEPTH_DIR overrides it. */
 export const DEPTH_DIR = process.env.NEUROSTUDIO_DEPTH_DIR ? resolve(process.env.NEUROSTUDIO_DEPTH_DIR) : resolve(import.meta.dirname, "../local/depth");
 export const LIBRARY_FILE = "library.json";
-/** ComfyUI input subfolder the maps are uploaded to. */
-export const COMFY_SUBFOLDER = "neurostudio-depth";
+/**
+ * Maps go straight into ComfyUI's input folder under content-addressed names with this prefix. ComfyUI's LoadImage lists only
+ * files directly in input/ (os.listdir), so a subfolder would make the dependency check report a map that is actually there.
+ */
+export const COMFY_PREFIX = "neurostudio-depth-";
+/** Subfolder used by the first Stage B commit: saved graphs that point there are still read and migrated on regeneration. */
+export const LEGACY_SUBFOLDER = "neurostudio-depth";
 /** Only these statuses exist; only "verified" is ever applied automatically. */
 export const MAP_STATUSES = ["verified", "candidate", "experimental", "rejected"] as const;
 export type MapStatus = (typeof MAP_STATUSES)[number];
@@ -248,25 +253,68 @@ export function decideFrame(input: FrameInput, lib: LibraryResult, env: DepthEnv
   return first!;
 }
 
-/** The file name a map gets in ComfyUI's input folder: content-addressed, so a different file never takes the same name. */
-export const comfyName = (m: Pick<DepthMapEntry, "id" | "sha256">) => `${m.id}-${m.sha256.slice(0, 12)}.png`;
+/** The file name a map gets directly in ComfyUI's input folder: content-addressed (id + first 12 hex of its SHA-256). */
+export const comfyName = (m: Pick<DepthMapEntry, "id" | "sha256">) => `${COMFY_PREFIX}${m.id}-${m.sha256.slice(0, 12)}.png`;
 
-type UploadClient = Partial<Pick<ComfyClient, "uploadImage">>;
+/** The identity of a map file in ComfyUI could not be confirmed (it is then never used). */
+export class MapIdentityError extends Error {}
+
+export type MapClient = Partial<Pick<ComfyClient, "objectInfo" | "uploadImage" | "download">>;
+
+/** SHA-256 of an input file as ComfyUI serves it (/view?type=input, raw bytes). */
+async function remoteSha(client: MapClient, filename: string, subfolder = ""): Promise<string> {
+  return sha(await client.download!({ filename, subfolder, type: "input" }));
+}
 
 /**
- * Re-reads the map, checks its hash again and uploads it to ComfyUI (input/neurostudio-depth/<name>). Returns the LoadImage value.
- * ComfyUI stores identical content under the same name; if it had to rename the file, another file with that name exists and the
- * map is NOT used (never substituted).
+ * Makes sure ComfyUI's input folder holds exactly the expected map under `name` and returns the LoadImage value (= name).
+ * - Already listed by LoadImage: its bytes are fetched through /view and hashed; a different file with that name is NOT
+ *   overwritten and NOT used (MapIdentityError).
+ * - Not listed: uploaded without overwrite; a rename by ComfyUI means a different file holds the name (MapIdentityError); after the
+ *   upload the stored bytes are fetched and hashed again.
+ * The same name is never taken as proof of the same content.
  */
-export async function uploadMap(client: UploadClient, lib: DepthLibrary, m: Pick<DepthMapEntry, "id" | "sha256" | "file">, name = comfyName(m)): Promise<string> {
-  if (!client.uploadImage) throw new Error("ComfyUI client cannot upload images");
+export async function ensureMap(client: MapClient, expectedSha: string, name: string, bytes: () => Promise<Buffer>): Promise<string> {
+  if (!client.objectInfo || !client.uploadImage || !client.download) throw new MapIdentityError("the ComfyUI client cannot list, upload and read input files, so the map cannot be verified");
+  const info = await client.objectInfo();
+  const listed = info.LoadImage?.input?.required?.image?.[0];
+  if (Array.isArray(listed) && listed.includes(name)) {
+    const got = await remoteSha(client, name);
+    if (got !== expectedSha) throw new MapIdentityError(`input/${name} in ComfyUI has sha256 ${got}, expected ${expectedSha}; the file is left as it is and not used`);
+    return name;
+  }
+  const buf = await bytes();
+  if (sha(buf) !== expectedSha) throw new MapIdentityError(`the local copy of ${name} does not match sha256 ${expectedSha}`);
+  const r = await client.uploadImage(buf, name, "");
+  if (r.name !== name || (r.subfolder ?? "") !== "") throw new MapIdentityError(`ComfyUI stored the map as ${r.subfolder ? `${r.subfolder}/` : ""}${r.name}: a different file named ${name} exists; it is not overwritten`);
+  const got = await remoteSha(client, name);
+  if (got !== expectedSha) throw new MapIdentityError(`after the upload input/${name} has sha256 ${got}, expected ${expectedSha}`);
+  return name;
+}
+
+/** Reads a library map from disk (hash checked) and makes sure ComfyUI has exactly it (see ensureMap). Returns the LoadImage value. */
+export async function uploadMap(client: MapClient, lib: DepthLibrary, m: Pick<DepthMapEntry, "id" | "sha256" | "file">): Promise<string> {
+  return ensureMap(client, m.sha256, comfyName(m), async () => localMap(lib, m));
+}
+
+/** A library map's bytes, with the hash checked again. */
+export function localMap(lib: DepthLibrary, m: Pick<DepthMapEntry, "id" | "sha256" | "file">): Buffer {
   const path = safeMapPath(lib.dir, m.file);
-  if (!path) throw new Error(`unsafe map path ${m.file}`);
+  if (!path) throw new MapIdentityError(`unsafe map path ${m.file}`);
   const buf = readFileSync(path);
-  if (sha(buf) !== m.sha256) throw new Error(`map ${m.id} changed on disk (sha256 mismatch)`);
-  const r = await client.uploadImage(buf, name, COMFY_SUBFOLDER);
-  if (r.name !== name || (r.subfolder ?? "") !== COMFY_SUBFOLDER) throw new Error(`ComfyUI stored the map as ${r.subfolder}/${r.name}: another file with that name exists`);
-  return `${COMFY_SUBFOLDER}/${name}`;
+  if (sha(buf) !== m.sha256) throw new MapIdentityError(`map ${m.id} changed on disk (sha256 mismatch)`);
+  return buf;
+}
+
+/** Bytes of a file in ComfyUI's input folder (any subfolder, e.g. a legacy map path), or null when it cannot be read. */
+export async function remoteInput(client: MapClient, value: string): Promise<Buffer | null> {
+  if (!client.download) return null;
+  const i = value.lastIndexOf("/");
+  try {
+    return await client.download({ filename: value.slice(i + 1), subfolder: i < 0 ? "" : value.slice(0, i), type: "input" });
+  } catch {
+    return null;
+  }
 }
 
 /** The Depth record of a frame that gets the map. */

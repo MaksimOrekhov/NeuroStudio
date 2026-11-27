@@ -1,13 +1,13 @@
 // NS-017: targeted regeneration of ONE image of an existing collection (no Codex, no new plan).
 // The source of every setting is the ComfyUI graph that was saved next to the source variant (<scene-name>.json):
 // only positive prompt (when edited), seed and filename prefix change. Existing images, sidecars and prompts are never touched.
-import { randomInt, randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { FIELDS, ComfyUnavailableError, applyParams, depthOf, removeDepth, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
+import { FIELDS, ComfyUnavailableError, applyParams, depthOf, removeDepth, setDepthImage, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
 import type { Settings } from "./composition.ts";
 import { promptMismatch, readConditioning, type Conditioning, type DepthChoice, type Mismatch } from "./depth.ts";
-import { COMFY_SUBFOLDER, adapterInstructions, depthEnvironment, loadDepthLibrary, uploadMap } from "./depthLibrary.ts";
+import { MapIdentityError, adapterInstructions, comfyName, ensureMap, loadDepthLibrary, localMap, remoteInput } from "./depthLibrary.ts";
 import { loadPoseCatalog } from "./poses.ts";
 import type { FrameRecord, Manifest } from "./collection.ts";
 import type { ErrorCode } from "./errors.ts";
@@ -216,17 +216,20 @@ export interface RegenDepth {
 /**
  * Decides what happens to the source's depth map BEFORE anything is reserved:
  * - no Depth in the source graph: unchanged (a keep/drop choice is a 400);
- * - unchanged prompt: keep by default (the saved graph as it is), drop on request;
- * - edited prompt: checked against the map's stored spec; a conflict without an explicit choice is DEPTH_CONFLICT (409);
+ * - unchanged prompt: keep by default, drop on request;
+ * - edited prompt: checked against the map's stored spec (view, shot size, gesture, hand side...); a conflict without an explicit
+ *   choice is DEPTH_CONFLICT (409);
  * - drop: the three nodes go and KSampler gets its original model link back;
- * - keep: ComfyUI must list the nodes and the adapter; a missing map is uploaded again ONLY from a library entry with the same
- *   sha256 under the same name. Anything else is DEPTH_UNAVAILABLE (409): never a silent switch to text, never another map.
+ * - keep: ComfyUI must list the nodes and the adapter, and its input folder must hold a file whose SHA-256 is the recorded one
+ *   (checked through /view, never assumed from the name). A missing copy is uploaded again under the content-addressed name, taken
+ *   from the library map with that hash or from the file the saved graph points to (an older subfolder path), both hash-checked; the
+ *   new graph then points to that name. Anything else is DEPTH_UNAVAILABLE (409): never a silent switch to text, never another map.
  */
 export async function prepareRegenDepth(o: {
   src: RegenSource;
   positive?: string;
   choice?: DepthChoice;
-  client: Partial<Pick<ComfyClient, "objectInfo" | "uploadImage">>;
+  client: Partial<Pick<ComfyClient, "objectInfo" | "uploadImage" | "download">>;
   depthDir: string;
   poseCatalogPath?: string;
 }): Promise<RegenDepth> {
@@ -245,47 +248,50 @@ export async function prepareRegenDepth(o: {
   if (choice === "drop") {
     return { graph: removeDepth(src.graph), ...(cond ? { conditioning: { mode: "text", userDecision: "drop", droppedFrom: { mapId: cond.mapId, mapSha256: cond.mapSha256 } } } : {}) };
   }
-  if (o.client.objectInfo) {
-    let info: Record<string, any>;
-    try {
-      info = await o.client.objectInfo();
-    } catch (e) {
-      throw new RegenError("COMFY_UNREACHABLE", `ComfyUI is not reachable: ${(e as Error).message}`, 503);
-    }
-    if (!["LoadImage", "ModelPatchLoader", "AnimaLLLiteApply"].every((c) => info[c])) throw new RegenError("DEPTH_UNAVAILABLE", "ComfyUI has no Anima LLLite nodes; regenerate without the map", 409);
-    const patches = info.ModelPatchLoader?.input?.required?.name?.[0];
-    if (!Array.isArray(patches) || !patches.includes(d.adapter)) {
-      let help = "";
-      try {
-        const lib = loadDepthLibrary(o.depthDir, loadPoseCatalog(o.poseCatalogPath));
-        if (lib.ok) help = `\n${adapterInstructions(lib.library)}`;
-      } catch {
-        /* the instructions are a courtesy */
-      }
-      throw new RegenError("DEPTH_UNAVAILABLE", `the Depth adapter ${d.adapter} is not listed by ComfyUI; regenerate without the map or install it${help}`, 409);
-    }
-    const images = info.LoadImage?.input?.required?.image?.[0];
-    if (!Array.isArray(images) || !images.includes(d.imageName)) {
-      const [sub, name] = String(d.imageName).split("/");
-      if (!cond || sub !== COMFY_SUBFOLDER || !name) throw new RegenError("DEPTH_UNAVAILABLE", `the depth map ${d.imageName} is missing in ComfyUI and cannot be restored`, 409);
-      let lib;
-      try {
-        lib = loadDepthLibrary(o.depthDir, loadPoseCatalog(o.poseCatalogPath));
-      } catch (e) {
-        lib = { ok: false as const, error: (e as Error).message };
-      }
-      if (!lib.ok) throw new RegenError("DEPTH_UNAVAILABLE", `the depth map is missing in ComfyUI and the local library is unavailable: ${lib.error}`, 409);
-      const same = lib.library.maps.find((m) => m.sha256 === cond.mapSha256);
-      if (!same) throw new RegenError("DEPTH_UNAVAILABLE", `the depth map is missing in ComfyUI and no library map has sha256 ${cond.mapSha256}; regenerate without the map`, 409);
-      try {
-        await uploadMap(o.client, lib.library, same, name);
-      } catch (e) {
-        throw new RegenError("DEPTH_UNAVAILABLE", `the depth map could not be uploaded again: ${(e as Error).message}`, 409);
-      }
-    }
+  const unavailable = (why: string) => new RegenError("DEPTH_UNAVAILABLE", `${why}; regenerate without the map`, 409);
+  if (!cond) throw unavailable("the source has no Depth record, so the identity of its map cannot be verified");
+  const client = o.client;
+  if (!client.objectInfo || !client.download || !client.uploadImage) throw unavailable("the ComfyUI client cannot verify the map");
+  let info: Record<string, any>;
+  try {
+    info = await client.objectInfo();
+  } catch (e) {
+    throw new RegenError("COMFY_UNREACHABLE", `ComfyUI is not reachable: ${(e as Error).message}`, 503);
   }
-  const kept = cond && { ...cond, ...(o.choice === "keep" ? { userDecision: "keep" as const } : {}), ...(conflict ? { conflict: { reason: conflict.reason, ...(conflict.detail ? { detail: conflict.detail } : {}) } } : {}) };
-  return { graph: src.graph, ...(kept ? { conditioning: kept } : {}) };
+  if (!["LoadImage", "ModelPatchLoader", "AnimaLLLiteApply"].every((c) => info[c])) throw unavailable("ComfyUI has no Anima LLLite nodes");
+  const patches = info.ModelPatchLoader?.input?.required?.name?.[0];
+  if (!Array.isArray(patches) || !patches.includes(d.adapter)) {
+    let help = "";
+    try {
+      const lib = loadDepthLibrary(o.depthDir, loadPoseCatalog(o.poseCatalogPath));
+      if (lib.ok) help = `\n${adapterInstructions(lib.library)}`;
+    } catch {
+      /* the instructions are a courtesy */
+    }
+    throw new RegenError("DEPTH_UNAVAILABLE", `the Depth adapter ${d.adapter} is not listed by ComfyUI; regenerate without the map or install it${help}`, 409);
+  }
+  // Where an identical copy can come from if ComfyUI does not have it: the library map with this hash, else the saved graph's file.
+  const copy = async (): Promise<Buffer> => {
+    try {
+      const lib = loadDepthLibrary(o.depthDir, loadPoseCatalog(o.poseCatalogPath));
+      const same = lib.ok ? lib.library.maps.find((m) => m.sha256 === cond.mapSha256) : undefined;
+      if (lib.ok && same) return localMap(lib.library, same);
+    } catch {
+      /* fall through to the file in ComfyUI */
+    }
+    const remote = d.imageName ? await remoteInput(client, d.imageName) : null;
+    if (remote && createHash("sha256").update(remote).digest("hex") === cond.mapSha256) return remote;
+    throw new MapIdentityError(`no copy with sha256 ${cond.mapSha256} in the local library or in ComfyUI`);
+  };
+  let image: string;
+  try {
+    image = await ensureMap(client, cond.mapSha256, comfyName({ id: cond.mapId, sha256: cond.mapSha256 }), copy);
+  } catch (e) {
+    throw unavailable(`the depth map cannot be verified in ComfyUI: ${(e as Error).message}`);
+  }
+  const graph = image === d.imageName ? src.graph : setDepthImage(src.graph, image);
+  const kept = { ...cond, comfyImage: image, ...(o.choice === "keep" ? { userDecision: "keep" as const } : {}), ...(conflict ? { conflict: { reason: conflict.reason, ...(conflict.detail ? { detail: conflict.detail } : {}) } } : {}) };
+  return { graph, conditioning: kept };
 }
 
 /**

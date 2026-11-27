@@ -64,11 +64,14 @@ export const DEPTH_REASONS = [
   "crop-unclear",
   "viewpoint-mismatch",
   "composition-conflict",
+  "gesture-mismatch",
+  "gesture-unclear",
   "hand-side-conflict",
   "hand-side-ambiguous",
   "nodes-unavailable",
   "adapter-unavailable",
   "upload-failed",
+  "map-unverified",
 ] as const;
 export type DepthReason = (typeof DEPTH_REASONS)[number];
 
@@ -91,6 +94,9 @@ export const DEPTH_REASON_RU: Record<DepthReason, string> = {
   "crop-unclear": "по промпту нельзя однозначно определить крупность",
   "viewpoint-mismatch": "высота точки съёмки не совпадает с картой",
   "composition-conflict": "промпт противоречит заданной композиции",
+  "gesture-mismatch": "положение рук в промпте не совпадает с картой",
+  "gesture-unclear": "по промпту нельзя установить положение рук",
+  "map-unverified": "файл карты в ComfyUI не удалось сверить по SHA-256",
   "hand-side-conflict": "промпт задаёт другую руку на талии, чем карта",
   "hand-side-ambiguous": "промпт противоречиво описывает руку на талии",
   "nodes-unavailable": "в ComfyUI нет нод Anima LLLite",
@@ -242,6 +248,14 @@ const ANAT = /\b(left|right) (?:hand|palm|arm|elbow|fist)\b|\bon (?:her )?(left|
 const IMAGE_SIDE = /\b(?:image|frame|picture)[- ](left|right)\b|\b(?:on|at|to(?:ward|wards)?) the (left|right)(?: side)? of the (?:image|frame|picture|composition)\b|\b(?:viewer'?s|our) (left|right)\b|\b(?:screen|camera)[- ](left|right)\b/i;
 const HANGING = /\b(left|right) (?:arm|hand)\b.*\b(?:hang(?:s|ing)?|relaxed (?:at|by|along) her side|(?:loosely|down|relaxed) (?:at|by) her side|along her (?:side|body)|by her side|at her side)\b/i;
 const opposite = (s: Side): Side => (s === "left" ? "right" : "left");
+/** ONE hand (singular) resting on the hip or waist: "her right hand resting flat on her hip", "one hand on the hip". */
+const ONE_ON_HIP = /\b(?:hand|palm|fist)\b[^,;]*?\b(?:on|against|at) (?:her |the |one )?(?:left |right )?(?:hip|waist)\b|\bhand[- ]on[- ]hip\b/i;
+/** Gestures that are not the map's: both arms down, arms crossed or folded, hands in pockets. */
+const ARMS_DOWN = /\b(?:both (?:arms|hands)|(?:her )?arms|(?:her )?hands)\b[^,;]*?\b(?:at|by|along|down (?:at|by)) (?:her|both) sides\b|\b(?:both )?arms (?:hanging |resting |relaxed )?(?:loosely |straight )?down\b/i;
+const CROSSED = /\b(?:arms|hands) (?:loosely |tightly )?(?:crossed|folded)\b|\b(?:crossed|folded) arms\b|\bcrossing her arms\b|\bfolding her arms\b/i;
+const POCKETS = /\b(?:hand|hands|thumbs?)\b[^,;]*?\bin (?:her |the |its |his )?(?:\w+ )?pockets?\b/i;
+const NEGATION = /\b(?:no|not|without|instead of|never|nor)\b/i;
+const rawClauses = (text: string) => text.split(/[,;\n]+|\.(?=\s|$)/).map((s) => s.trim()).filter(Boolean);
 
 export interface PromptReading {
   /** Creative Director house format (blocks separated by blank lines, block 2 starts with "solo female"). */
@@ -257,6 +271,11 @@ export interface PromptReading {
   posture: "standing" | "other" | null;
   /** Sides of the hand on the hip the prompt states (anatomical / picture), and whether both hands are on the hips. */
   hand: { anatomical: Side[]; image: Side[]; both: boolean };
+  /**
+   * The arm gesture as far as a depth map with ONE hand on the hip cares (conservative, not general language understanding):
+   * oneOnHip = a single hand is placed on the hip/waist; the other flags are gestures that contradict such a map.
+   */
+  gesture: { oneOnHip: boolean; armsDown: boolean; crossed: boolean; pockets: boolean; negatedHip: boolean };
 }
 
 /** Reads what a frame prompt says about the composition a depth map fixes. Pure, deterministic. */
@@ -315,9 +334,13 @@ export function readPrompt(positive: string): PromptReading {
       if (h) anatomical.add(opposite(h[1].toLowerCase() as Side));
     }
   }
+  // Negated clauses are dropped above; a negated hand-on-hip ("no hand on her hip") is itself a statement about the gesture.
+  const negatedHip = rawClauses(positive).some((c) => NEGATION.test(c) && /\b(?:hip|hips|waist)\b/i.test(c) && /\b(?:hand|hands|palm|palms|arm|arms|elbow|fist)\b/i.test(c));
+  const gesture = { oneOnHip: any(all, ONE_ON_HIP), armsDown: any(all, ARMS_DOWN), crossed: any(all, CROSSED), pockets: any(all, POCKETS), negatedHip };
   return {
     structured, view, ...(viewNote ? { viewNote } : {}), crop, ...(cropNote ? { cropNote } : {}), viewpoint, posture,
     hand: { anatomical: [...anatomical].sort(), image: [...image].sort(), both },
+    gesture,
   };
 }
 
@@ -353,7 +376,14 @@ export function promptMismatch(spec: DepthSpec, positive: string, req: Settings 
 
   const h = spec.handOnHip;
   if (h) {
-    if (r.hand.both) return { reason: "hand-side-conflict", detail: "both hands on the hips; the map has one" };
+    // The gesture first: the map shows exactly one hand on the hip and the other arm hanging.
+    const g = r.gesture;
+    if (g.negatedHip) return { reason: "gesture-mismatch", detail: "the prompt says the hand is not on the hip" };
+    if (r.hand.both) return { reason: "gesture-mismatch", detail: "both hands on the hips; the map has one" };
+    if (g.crossed) return { reason: "gesture-mismatch", detail: "arms crossed or folded" };
+    if (g.pockets) return { reason: "gesture-mismatch", detail: "hands in pockets" };
+    if (g.armsDown) return { reason: "gesture-mismatch", detail: "both arms down at her sides" };
+    if (!g.oneOnHip) return { reason: "gesture-unclear", detail: "the prompt does not place one hand on the hip" };
     if (r.hand.anatomical.length > 1) return { reason: "hand-side-ambiguous", detail: "both her left and her right hand are described on the hip" };
     if (r.hand.image.length > 1) return { reason: "hand-side-ambiguous", detail: "the hand on the hip is placed on both sides of the picture" };
     if (r.hand.anatomical.length && r.hand.anatomical[0] !== h.anatomical) return { reason: "hand-side-conflict", detail: `prompt: her ${r.hand.anatomical[0]} hand; map: her ${h.anatomical} hand` };
