@@ -6,7 +6,8 @@ import { join, resolve } from "node:path";
 import sharp from "sharp";
 import { buildApp } from "../../server/app.ts";
 import { AutopilotRunner } from "../../server/runner.ts";
-import { MODELS, applyParams, loadWorkflow } from "../../src/comfy.ts";
+import { createHash } from "node:crypto";
+import { MODELS, applyDepth, applyParams, loadWorkflow } from "../../src/comfy.ts";
 import { planV3 } from "./strictPlan.ts";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -42,7 +43,27 @@ interface Spec {
   createdAt: string;
   plan?: boolean;
   generation?: boolean;
+  /** NS-027: frame -> conditioning shown in the UI (frame 1 also gets the Depth nodes in its saved graph). */
+  depth?: Record<number, "depth" | "text">;
 }
+
+/** NS-027 fake records: a map applied (with the spec of the approved ND-P25 map) and a text-only frame with its reason. */
+const FAKE_DEPTH = {
+  mode: "depth", mapId: "nd-p25-fq-h2mt-01", mapSha256: "d9edd45bd55ff11fed07073ec87e563093f8546f64aa266b6b69e19e2d9bc0b0", poseId: "ND-P25", model: "crimson-oath",
+  adapter: { file: "anima-lllite-depth-1.safetensors", expectedSha256: "81357e51cd59874b4fbdda1eb3117aa73eafe36cc7efb9cf80a152d6bc8d0602", check: "listed-by-comfyui" },
+  strength: 1, startPercent: 0, endPercent: 1, libraryVersion: 1, comfyImage: "neurostudio-depth/nd-p25-fq-h2mt-01-d9edd45bd55f.png",
+  spec: { views: ["front_three_quarter_view"], crops: ["head_to_mid_thigh"], viewpoints: ["eye_level"], poses: ["standing_with_weight_on_one_leg", "standing_naturally"], posture: "standing", handOnHip: { anatomical: "right", image: "left" } },
+};
+const FAKE_TEXT = { mode: "text", depthRequested: true, reason: "view-mismatch", detail: "prompt view direct_front_view" };
+const DEPTH_PROMPT = [
+  "realistic, masterpiece, best quality,",
+  "solo female, adult woman, 32 years old, original character, mature face, adult body, huge breast,",
+  "black chin-length bob, dark brown eyes, calm confident expression,",
+  "standing in a relaxed contrapposto with her weight on one leg, her right hand resting flat on her hip with the elbow out, her left arm hanging loosely at her side, looking at the viewer,",
+  "deep burgundy velvet wrap dress, thin gold belt,",
+  "art deco hotel bar at night, amber globe lamps,",
+  "front three-quarter view from head to mid-thigh, eye level, warm amber lamp light",
+].join("\n\n");
 
 async function writeCollection(dir: string, s: Spec) {
   const base = await loadWorkflow(join(root, "workflows/anima-crimson-oath.api.json"));
@@ -63,12 +84,15 @@ async function writeCollection(dir: string, s: Spec) {
         promptId: st === "pending" ? undefined : `pid-${s.id.slice(-6)}-${f}-${v}`,
         png: st === "done" ? `${name}.png` : undefined,
         error: st === "failed" ? "Generation failed: CUDA out of memory (KSampler)" : undefined,
+        ...(s.depth?.[f] ? { conditioning: s.depth[f] === "depth" ? FAKE_DEPTH : FAKE_TEXT } : {}),
       });
       if (st === "done") {
         await writeFile(join(d, `${name}.png`), await placeholderPng(s.hue + f * 17, f, v));
         // the sidecar the real generator writes: it holds the ComfyUI graph that regeneration starts from (NS-017)
-        const graph = applyParams(base, { positive: `masterpiece, scene ${f}, ${s.id}, soft light${v >= 3 ? `, variant ${v} (edited)` : ""}`, negative: "lowres", seed: 100000 + f * 10 + v, unet: MODELS[s.models[f - 1] as keyof typeof MODELS], filenamePrefix: `NeuroStudio/${s.id}/${name}` });
-        await writeFile(join(d, `${name}.json`), JSON.stringify({ frame: f, model: s.models[f - 1], variant: v, seed: 100000 + f * 10 + v, graph }));
+        const withDepth = s.depth?.[f] === "depth";
+        const plain = applyParams(base, { positive: withDepth ? DEPTH_PROMPT : `masterpiece, scene ${f}, ${s.id}, soft light${v >= 3 ? `, variant ${v} (edited)` : ""}`, negative: "lowres", seed: 100000 + f * 10 + v, unet: MODELS[s.models[f - 1] as keyof typeof MODELS], filenamePrefix: `NeuroStudio/${s.id}/${name}` });
+        const graph = withDepth ? applyDepth(plain, { image: FAKE_DEPTH.comfyImage, adapter: FAKE_DEPTH.adapter.file, strength: 1, startPercent: 0, endPercent: 1 }) : plain;
+        await writeFile(join(d, `${name}.json`), JSON.stringify({ frame: f, model: s.models[f - 1], variant: v, seed: 100000 + f * 10 + v, graph, ...(s.depth?.[f] ? { conditioning: s.depth[f] === "depth" ? FAKE_DEPTH : FAKE_TEXT } : {}) }));
       }
     }
   }
@@ -126,7 +150,7 @@ export async function createFixture(base?: string) {
   await mkdir(batchesDir, { recursive: true });
   const specs: Spec[] = [
     // 4 frames x 2 variants, Russian metadata, Best chosen for 2 of 4: "needs selection"
-    { id: "2026-11-10-ferry", title: "Morning Ferry", titleRu: "Утренний паром", hue: 200, frameCount: 4, variations: 2, models: [C, C, D, D], selections: { "1": 2, "3": 1 }, imageFeedback: { "1-2": { verdict: "like", tags: ["great_outfit", "good_composition"] }, "3-1": { verdict: "like", tags: ["great_outfit"] }, "4-1": { verdict: "dislike", tags: ["anatomy"] } }, comparisons: [{ frame: 1, a: 1, b: 2, winner: 2 }], createdAt: "2026-11-10T09:30:00Z", generation: true },
+    { id: "2026-11-10-ferry", title: "Morning Ferry", titleRu: "Утренний паром", hue: 200, frameCount: 4, variations: 2, models: [C, C, D, D], depth: { 1: "depth", 2: "text" }, selections: { "1": 2, "3": 1 }, imageFeedback: { "1-2": { verdict: "like", tags: ["great_outfit", "good_composition"] }, "3-1": { verdict: "like", tags: ["great_outfit"] }, "4-1": { verdict: "dislike", tags: ["anatomy"] } }, comparisons: [{ frame: 1, a: 1, b: 2, winner: 2 }], createdAt: "2026-11-10T09:30:00Z", generation: true },
     // one frame: ready at once
     { id: "2026-11-10-ovation", title: "A Private Ovation", titleRu: "Аплодисменты для себя", hue: 340, frameCount: 1, variations: 1, models: [C], createdAt: "2026-11-10T08:10:00Z", generation: true, feedback: { rating: 5, tags: ["great_outfit", "good_composition"], note: "Один кадр держит композицию." } },
     // two frames x 2, both Best chosen, rated
@@ -163,7 +187,20 @@ export async function createFixture(base?: string) {
   await writeBatch(batchesDir, "2026-11-08-ccc", { ...base4, createdAt: "2026-11-08T17:55:00Z", theme: "лимоны", variations: 1, status: "failed", error: "Generation failed: CUDA out of memory (KSampler)", errorCode: "GENERATION_FAILED", collectionIds: ["2026-11-08-lemon"], plans: [] });
   await writeBatch(batchesDir, "2026-11-07-ddd", { ...base4, createdAt: "2026-11-07T19:59:00Z", theme: null, frames: 2, status: "running", collectionIds: ["2026-11-07-balcony"], plans: [] });
   await writeBatch(batchesDir, "2026-10-01-old", { createdAt: "2026-10-01T11:50:00Z", theme: null, count: 1, variations: 1, status: "done", collectionIds: ["2026-10-01-saltglass"], plans: [{ frames: [1, 2, 3, 4] }] }); // pre-NS-014 shape
-  return { dir, collectionsDir, batchesDir, thumbsDir };
+  // NS-027: a fake local Depth library (a header-only PNG; nothing from POSE-DB-02)
+  const depthDir = join(dir, "depth");
+  await mkdir(join(depthDir, "maps"), { recursive: true });
+  const map = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 5, 160, 0, 0, 8, 128, 8, 2, 0, 0, 0]), Buffer.from("fake depth map")]);
+  await writeFile(join(depthDir, "maps", "fake.png"), map);
+  await writeFile(
+    join(depthDir, "library.json"),
+    JSON.stringify({
+      version: 1,
+      adapter: { file: FAKE_DEPTH.adapter.file, sha256: FAKE_DEPTH.adapter.expectedSha256, localCopy: "E:/NeuroStudio/output/ns-025/comfy-pilot/models/model_patches/anima-lllite-depth-1.safetensors" },
+      maps: [{ id: "nd-p25-fq-h2mt-01", poseId: "ND-P25", file: "maps/fake.png", sha256: createHash("sha256").update(map).digest("hex"), size: [1440, 2176], ...FAKE_DEPTH.spec, models: [C, D, "illustrijn"], depth: { strength: 1, startPercent: 0, endPercent: 1 }, smoothBooster: false, status: "verified", evidence: "fake", provenance: { terms: "fake test data" } }],
+    }),
+  );
+  return { dir, collectionsDir, batchesDir, thumbsDir, depthDir };
 }
 
 export interface FakeBehaviour {
@@ -215,7 +252,16 @@ export async function createFakeApp(opts: { fx: Awaited<ReturnType<typeof create
     baseGraph: await loadWorkflow(join(root, "workflows/anima-crimson-oath.api.json")),
     collectionsDir: opts.fx.collectionsDir,
     batchesDir: opts.fx.batchesDir,
+    depthDir: opts.fx.depthDir,
   });
+  // NS-027: the fake ComfyUI has the LLLite nodes but not the adapter, so the UI shows the install steps.
+  const depthClient = {
+    objectInfo: async () => ({
+      LoadImage: { input: { required: { image: [[FAKE_DEPTH.comfyImage]] } } },
+      ModelPatchLoader: { input: { required: { name: [[]] } } },
+      AnimaLLLiteApply: { input: { required: {} } },
+    }),
+  };
   const app = buildApp({
     runner,
     collectionsDir: opts.fx.collectionsDir,
@@ -223,6 +269,8 @@ export async function createFakeApp(opts: { fx: Awaited<ReturnType<typeof create
     thumbsDir: opts.fx.thumbsDir,
     comfyUrl: "http://fake",
     port: opts.port,
+    depthDir: opts.fx.depthDir,
+    depthClient,
     webDist: opts.webDist,
     loadCatalog: async () => ({
       source: "cache" as const,

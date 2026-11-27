@@ -7,6 +7,7 @@ import {
   getCodexModels,
   getCollection,
   getCollections,
+  getDepthStatus,
   getEvolutionPreview,
   getComparisons,
   saveComparison,
@@ -22,12 +23,15 @@ import {
   type CodexModels,
   type Collection,
   type Comparison,
+  type DepthStatus,
   type EvolutionPreview,
   type Feedback,
   type ImageFeedback,
   type RunRecord,
 } from "./api";
 import { describeError, type UiError } from "./errors";
+import { DEPTH_REASON_RU, promptMismatch, type DepthSpec } from "../../src/depth";
+import type { Settings } from "../../src/composition";
 import { pairKey } from "./arena";
 import { needsSelection } from "./lib";
 import { MAX_FRAMES, assignModels, autoMix, totalImages, type ModelMode } from "./models";
@@ -297,6 +301,49 @@ watch(
   (m) => store.set(POSE_KEY, m),
 );
 
+// NS-027: experimental depth maps. Off until the user switches them on; they only count together with the pose library.
+const DEPTH_KEY = "neurostudio.depthMode";
+form.depthMode = store.get(DEPTH_KEY) === "auto" ? "auto" : "off";
+watch(
+  () => form.depthMode,
+  (m) => store.set(DEPTH_KEY, m),
+);
+/** Is Depth usable right now (library + ComfyUI nodes/adapter)? Loaded only while the switch is on. */
+export const depthStatus = reactive({ loading: false, data: null as DepthStatus | null, error: null as UiError | null });
+let depthSeq = 0;
+export async function loadDepthStatus(): Promise<void> {
+  const seq = ++depthSeq;
+  depthStatus.loading = true;
+  depthStatus.error = null;
+  try {
+    const d = await getDepthStatus();
+    if (seq === depthSeq) depthStatus.data = d;
+  } catch (e) {
+    if (seq === depthSeq) depthStatus.error = describeError(e);
+  } finally {
+    if (seq === depthSeq) depthStatus.loading = false;
+  }
+}
+/** Depth is sent only with the pose library. */
+export const depthActive = computed(() => form.poseMode === "auto" && form.depthMode === "auto");
+watch(depthActive, (on) => {
+  if (on) void loadDepthStatus();
+});
+/** Why Depth cannot be applied to any frame right now (the run still works, text-only). null = no known problem. */
+export const depthWarning = computed((): string | null => {
+  if (!depthActive.value) return null;
+  if (depthStatus.error) return `Не удалось проверить Depth: ${depthStatus.error.message}`;
+  const d = depthStatus.data;
+  if (!d) return null;
+  if (!d.library.available) return `Локальная Depth-библиотека недоступна: ${d.library.error}. Кадры будут сгенерированы без карт.`;
+  if (!d.library.maps.some((m) => m.status === "verified")) return "В библиотеке нет одобренных карт. Кадры будут сгенерированы без карт.";
+  if (!d.comfy?.nodes) return `В ComfyUI нет нод Anima LLLite${d.comfy?.error ? ` (${d.comfy.error})` : ""}. Кадры будут сгенерированы без карт.`;
+  if (!d.comfy.adapter) return d.instructions ?? "Адаптер Depth не установлен в ComfyUI. Кадры будут сгенерированы без карт.";
+  return null;
+});
+/** Russian reason of a text-only frame. */
+export const depthReasonRu = (reason: string) => (DEPTH_REASON_RU as Record<string, string>)[reason] ?? reason;
+
 /** Read-only look at what would be sent to Codex (GET /api/prompt-evolution/preview; no Codex is started). */
 export const evolution = reactive({ open: false, loading: false, data: null as EvolutionPreview | null, error: null as UiError | null });
 let evolutionSeq = 0;
@@ -426,16 +473,36 @@ export const regen = reactive({
   edited: false,
   submitting: false,
   error: null as UiError | null,
+  /** NS-027: the source was generated with a depth map: what it supports (null = no map). */
+  depth: null as { mapId?: string; spec?: DepthSpec; requirements: Settings } | null,
+  /** Keep the map (sent as depth: "keep" / "drop"). */
+  keepDepth: true,
+  /** The user changed the switch: an edit no longer flips it automatically. */
+  depthTouched: false,
+  /** Why the edited prompt does not clearly fit the map (Russian), or null. */
+  depthConflict: null as string | null,
 });
+/** NS-027: an edited prompt is checked against the map (same rules as the server); a conflict switches "keep" off until the user decides. */
+watch(
+  () => [regen.text, regen.depth] as const,
+  () => {
+    const d = regen.depth;
+    if (!d) return;
+    const changed = regen.text.trim() !== regen.original.trim();
+    const mm = !changed ? null : d.spec ? promptMismatch(d.spec, regen.text, d.requirements) : { reason: "map-invalid" as const, detail: undefined };
+    regen.depthConflict = mm ? `${depthReasonRu(mm.reason)}${mm.detail ? ` (${mm.detail})` : ""}` : null;
+    if (!regen.depthTouched) regen.keepDepth = !mm;
+  },
+);
 
 let regenSeq = 0; // identifies the latest open request (a reactive object is a proxy, so it cannot be compared by identity)
 export async function openRegen(c: Collection, frame: number, variant: number): Promise<void> {
   const seq = ++regenSeq;
-  Object.assign(regen, { target: { id: c.id, frame, variant }, loading: true, available: false, model: "", original: "", text: "", edited: false, submitting: false, error: null });
+  Object.assign(regen, { target: { id: c.id, frame, variant }, loading: true, available: false, model: "", original: "", text: "", edited: false, submitting: false, error: null, depth: null, keepDepth: true, depthTouched: false, depthConflict: null });
   try {
     const r = await getVariantPrompt(c.id, frame, variant);
     if (seq !== regenSeq || !regen.target) return; // closed or reopened for another variant meanwhile
-    if (r.available) Object.assign(regen, { available: true, model: r.model, original: r.positive, text: r.positive, edited: r.promptEdited });
+    if (r.available) Object.assign(regen, { available: true, model: r.model, original: r.positive, text: r.positive, edited: r.promptEdited, depth: r.depth ? { mapId: r.depth.mapId, spec: r.depth.spec, requirements: r.depth.requirements } : null });
     else regen.error = describeError(new ApiError(r.reason, r.code, 409));
   } catch (e) {
     if (seq === regenSeq && regen.target) regen.error = describeError(e);
@@ -463,7 +530,9 @@ export async function submitRegen(): Promise<boolean> {
   regen.error = null;
   try {
     const changed = regen.text.trim() !== regen.original.trim();
-    const state = await startRegeneration(t.id, t.frame, { sourceVariant: t.variant, ...(changed ? { positive: regen.text } : {}) });
+    // NS-027: a source with a depth map always gets an explicit decision.
+    const depth = regen.depth ? (regen.keepDepth ? ("keep" as const) : ("drop" as const)) : undefined;
+    const state = await startRegeneration(t.id, t.frame, { sourceVariant: t.variant, ...(changed ? { positive: regen.text } : {}), ...(depth ? { depth } : {}) });
     statusSeq++; // a status request sent before the 202 is stale now
     app.status = { comfy: app.status?.comfy ?? { ok: true }, run: state };
     app.connection = "ok";

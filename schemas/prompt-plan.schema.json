@@ -63,6 +63,7 @@
             "type": "string",
             "enum": [
               "crimson-oath",
+              "crimson-oath-v03",
               "duskrose",
               "illustrijn"
             ]

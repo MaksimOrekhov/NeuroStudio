@@ -3,7 +3,8 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { modelIndex, type ImageModelAssignment } from "./imageModels.ts";
 import type { Resolved } from "./composition.ts";
-import { ComfyUnavailableError, MODELS, applyParams, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
+import { ComfyUnavailableError, MODELS, applyDepth, applyParams, type ComfyClient, type DepthParams, type Graph, type ImageRef } from "./comfy.ts";
+import type { Conditioning } from "./depth.ts";
 import type { PromptPlan } from "./promptPlan.ts";
 import { writeAtomic } from "./persistence.ts";
 import { framePose, type FramePose } from "./poses.ts";
@@ -22,7 +23,12 @@ export interface Job {
   graph: Graph;
   /** NS-026: catalog pose of the plan frame (auto pose mode); every seed variant of the frame inherits it. */
   pose?: FramePose;
+  /** NS-027: what was actually put into this job's graph when Depth was requested (absent when Depth is off). */
+  conditioning?: Conditioning;
 }
+
+/** NS-027: per plan frame, the conditioning record and (when the map is applied) the Depth node parameters. */
+export type FrameDepth = Map<number, { conditioning: Conditioning; params?: DepthParams }>;
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
@@ -31,7 +37,7 @@ const pad = (n: number) => String(n).padStart(2, "0");
  * the same prompts and settings; only the seed differs, and all seeds are unique. Execution order groups
  * frames by model (fewer checkpoint reloads); frame numbers stay those of the plan.
  */
-export function buildJobs(plan: PromptPlan, base: Graph, slug: string, variations = 1, poseCatalogVersion?: number): Job[] {
+export function buildJobs(plan: PromptPlan, base: Graph, slug: string, variations = 1, poseCatalogVersion?: number, depth?: FrameDepth): Job[] {
   const used = new Set<number>();
   const jobs: Job[] = [];
   for (const f of plan.frames) {
@@ -40,15 +46,18 @@ export function buildJobs(plan: PromptPlan, base: Graph, slug: string, variation
       while (used.has(seed)) seed = randomInt(0, SEED_MAX);
       used.add(seed);
       const file = variations === 1 ? `scene-${pad(f.frame)}` : `scene-${pad(f.frame)}-v${pad(variant)}`;
-      const graph = applyParams(base, {
+      const params = applyParams(base, {
         positive: f.positive,
         negative: f.negative,
         seed,
         unet: MODELS[f.model],
         filenamePrefix: `NeuroStudio/${slug}/${file}`,
       });
+      // NS-027: every seed variant of a frame gets the same decision; the map is added to this job's own copy only.
+      const d = depth?.get(f.frame);
+      const graph = d?.params ? applyDepth(params, d.params) : params;
       const pose = framePose(f.poseId, poseCatalogVersion);
-      jobs.push({ frame: f.frame, variant, file, model: f.model, seed, summary: f.summary, graph, ...(pose ? { pose } : {}) });
+      jobs.push({ frame: f.frame, variant, file, model: f.model, seed, summary: f.summary, graph, ...(pose ? { pose } : {}), ...(d ? { conditioning: structuredClone(d.conditioning) } : {}) });
     }
   }
   return jobs.sort((a, b) => (a.model === b.model ? a.frame - b.frame || a.variant - b.variant : modelIndex(a.model) - modelIndex(b.model)));
@@ -76,6 +85,8 @@ export interface FrameRecord {
   promptEdited?: boolean;
   /** NS-026: the pose this image's prompt was PLANNED with (auto pose mode only); not a check of the image. promptAsPlanned=false after a prompt edit. */
   pose?: FramePose;
+  /** NS-027: conditioning actually used (Depth map or text-only with the reason). Absent when Depth was not requested. */
+  conditioning?: Conditioning;
 }
 
 export interface Generation {
@@ -85,6 +96,8 @@ export interface Generation {
   composition: Resolved | null;
   /** NS-026: present only when the run used the pose catalog. */
   pose?: { mode: "auto"; catalogVersion: number };
+  /** NS-027: present only when Depth was requested; libraryVersion null = the library was unavailable. */
+  depth?: { mode: "auto"; libraryVersion: number | null };
 }
 
 export interface Manifest {
@@ -137,7 +150,7 @@ export async function runCollection(opts: {
     variations: Math.max(1, ...jobs.map((j) => j.variant)),
     frameCount: plan.frames.length,
     generation: opts.generation,
-    frames: jobs.map((j) => ({ frame: j.frame, variant: j.variant, model: j.model, seed: j.seed, status: "pending", ...(j.pose ? { pose: j.pose } : {}) })),
+    frames: jobs.map((j) => ({ frame: j.frame, variant: j.variant, model: j.model, seed: j.seed, status: "pending", ...(j.pose ? { pose: j.pose } : {}), ...(j.conditioning ? { conditioning: j.conditioning } : {}) })),
   };
   const save = async () => {
     await writeAtomic(join(dir, "collection.json"), JSON.stringify(m, null, 2));
@@ -149,10 +162,14 @@ export async function runCollection(opts: {
 
   try {
     await client.systemStats();
-    for (const model of new Set(jobs.map((j) => j.model))) {
-      const job = jobs.find((j) => j.model === model)!;
+    // One check per model, plus one per Depth map and model (NS-027): a Depth job uses nodes and files a plain job does not.
+    const checked = new Set<string>();
+    for (const job of jobs) {
+      const key = job.conditioning?.mode === "depth" ? `${job.model} ${job.conditioning.comfyImage}` : job.model;
+      if (checked.has(key)) continue;
+      checked.add(key);
       const problems = await client.checkDependencies(job.graph);
-      if (problems.length) throw new Error(`Missing dependencies for ${model}:\n  ${problems.join("\n  ")}`);
+      if (problems.length) throw new Error(`Missing dependencies for ${job.model}${job.conditioning?.mode === "depth" ? " with Depth" : ""}:\n  ${problems.join("\n  ")}`);
     }
     await save();
 
@@ -179,7 +196,7 @@ export async function runCollection(opts: {
       await writeAtomic(join(dir, `${name}.png`), png);
       await writeAtomic(
         join(dir, `${name}.json`),
-        JSON.stringify({ frame: job.frame, model: job.model, summary: job.summary, variant: job.variant, seed: job.seed, ...(job.pose ? { pose: job.pose } : {}), promptId: rec.promptId, seconds, image: images[0], graph: job.graph, history }, null, 2),
+        JSON.stringify({ frame: job.frame, model: job.model, summary: job.summary, variant: job.variant, seed: job.seed, ...(job.pose ? { pose: job.pose } : {}), ...(job.conditioning ? { conditioning: job.conditioning } : {}), promptId: rec.promptId, seconds, image: images[0], graph: job.graph, history }, null, 2),
       );
       rec.png = `${name}.png`;
       rec.seconds = seconds;

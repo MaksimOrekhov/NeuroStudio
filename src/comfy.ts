@@ -47,6 +47,113 @@ export const FIELDS: Record<keyof GenParams, Field> = {
   unet: { node: "90:78", cls: "UNETLoader", input: "unet_name" },
 };
 
+/** Smooth Booster switch of the production graph (true = LoRA, 8 steps, CFG 1). Not a request parameter: always off today. */
+export const BOOSTER: Field = { node: "90:89", cls: "PrimitiveBoolean", input: "value" };
+
+/** True only when the graph has the Smooth Booster switch and it is off. */
+export function boosterOff(graph: Graph): boolean {
+  const n = graph[BOOSTER.node];
+  return n?.class_type === BOOSTER.cls && n.inputs[BOOSTER.input] === false;
+}
+
+const linkOf = (v: unknown): [string, number] | null => (Array.isArray(v) && v.length === 2 && typeof v[0] === "string" && typeof v[1] === "number" ? [v[0], v[1]] : null);
+
+/**
+ * The pixel size the graph renders (the latent size x 8), or null when it cannot be read. Follows KSampler.latent_image to its
+ * EmptyLatentImage; width/height are either numbers or outputs of ResolutionSelector (same formula as ComfyUI 0.46).
+ */
+export function graphImageSize(graph: Graph): [number, number] | null {
+  const ks = graph[FIELDS.seed.node];
+  const lat = linkOf(ks?.inputs?.latent_image);
+  const latent = lat && graph[lat[0]];
+  if (!latent || latent.class_type !== "EmptyLatentImage") return null;
+  const dim = (v: unknown): number | null => {
+    if (typeof v === "number") return v;
+    const l = linkOf(v);
+    const n = l && graph[l[0]];
+    if (!n || n.class_type !== "ResolutionSelector") return null;
+    const m = String(n.inputs.aspect_ratio).match(/^(\d+):(\d+)/);
+    const mp = n.inputs.megapixels;
+    const mult = n.inputs.multiple ?? 8;
+    if (!m || typeof mp !== "number" || typeof mult !== "number") return null;
+    const [w, h] = [Number(m[1]), Number(m[2])];
+    const scale = Math.sqrt((mp * 1024 * 1024) / (w * h));
+    return Math.round(((l[1] === 0 ? w : h) * scale) / mult) * mult;
+  };
+  const w = dim(latent.inputs.width);
+  const h = dim(latent.inputs.height);
+  return w && h ? [Math.floor(w / 8) * 8, Math.floor(h / 8) * 8] : null;
+}
+
+// ---------- NS-027: Depth nodes in ONE job's graph ----------
+
+/** Reserved node ids of the three Depth nodes added to a job graph. */
+export const DEPTH_NODES = { image: "ns-depth:image", patch: "ns-depth:patch", apply: "ns-depth:apply" } as const;
+
+export interface DepthParams {
+  /** LoadImage value: subfolder/name in ComfyUI's input folder. */
+  image: string;
+  adapter: string;
+  strength: number;
+  startPercent: number;
+  endPercent: number;
+}
+
+/**
+ * Returns a copy of `graph` with LoadImage -> ModelPatchLoader -> AnimaLLLiteApply between the model that KSampler used and KSampler
+ * (exactly the NS-027 Stage A graphs). The input graph is never mutated.
+ */
+export function applyDepth(graph: Graph, p: DepthParams): Graph {
+  const g = structuredClone(graph);
+  const ks = g[FIELDS.seed.node];
+  if (ks?.class_type !== FIELDS.seed.cls) throw new WorkflowError(`Node ${FIELDS.seed.node} is not a KSampler`);
+  const model = linkOf(ks.inputs.model);
+  if (!model) throw new WorkflowError("KSampler.model is not a link");
+  if (Object.values(DEPTH_NODES).some((id) => g[id]) || depthOf(g)) throw new WorkflowError("the graph already has Depth nodes");
+  g[DEPTH_NODES.image] = { class_type: "LoadImage", inputs: { image: p.image } };
+  g[DEPTH_NODES.patch] = { class_type: "ModelPatchLoader", inputs: { name: p.adapter } };
+  g[DEPTH_NODES.apply] = {
+    class_type: "AnimaLLLiteApply",
+    inputs: { model, model_patch: [DEPTH_NODES.patch, 0], image: [DEPTH_NODES.image, 0], strength: p.strength, start_percent: p.startPercent, end_percent: p.endPercent },
+  };
+  ks.inputs.model = [DEPTH_NODES.apply, 0];
+  return g;
+}
+
+/** The Depth nodes feeding KSampler.model, or null. Works on any node ids (old saved graphs included). */
+export function depthOf(graph: Graph): { apply: string; image?: string; patch?: string; imageName?: string; adapter?: string } | null {
+  const ks = graph[FIELDS.seed.node];
+  const l = linkOf(ks?.inputs?.model);
+  const apply = l && graph[l[0]];
+  if (!l || apply?.class_type !== "AnimaLLLiteApply") return null;
+  const img = linkOf(apply.inputs.image);
+  const patch = linkOf(apply.inputs.model_patch);
+  const imgNode = img && graph[img[0]];
+  const patchNode = patch && graph[patch[0]];
+  return {
+    apply: l[0],
+    ...(img && imgNode?.class_type === "LoadImage" ? { image: img[0], imageName: String(imgNode.inputs.image) } : {}),
+    ...(patch && patchNode?.class_type === "ModelPatchLoader" ? { patch: patch[0], adapter: String(patchNode.inputs.name) } : {}),
+  };
+}
+
+/**
+ * Returns a copy without the Depth nodes: KSampler.model is linked back to the model AnimaLLLiteApply received (the original link).
+ * The LoadImage / ModelPatchLoader nodes are removed only when nothing else uses them.
+ */
+export function removeDepth(graph: Graph): Graph {
+  const g = structuredClone(graph);
+  const d = depthOf(g);
+  if (!d) throw new WorkflowError("the graph has no Depth nodes");
+  const original = linkOf(g[d.apply].inputs.model);
+  if (!original) throw new WorkflowError("AnimaLLLiteApply.model is not a link");
+  g[FIELDS.seed.node].inputs.model = original;
+  delete g[d.apply];
+  const used = (id: string) => Object.values(g).some((n) => Object.values(n.inputs).some((v) => linkOf(v)?.[0] === id));
+  for (const id of [d.image, d.patch]) if (id && !used(id)) delete g[id];
+  return g;
+}
+
 /** Plan model id -> checkpoint file (from the shared catalog). All use the Anima graph; only the UNET differs. */
 export const MODELS = Object.fromEntries(IMAGE_MODELS.map((m) => [m.id, m.checkpoint])) as Record<ImageModelId, string>;
 
@@ -157,6 +264,20 @@ export class ComfyClient {
       }
     }
     return problems;
+  }
+
+  /**
+   * NS-027: uploads one image into ComfyUI's input folder (never overwrites: ComfyUI keeps identical content under the same name and
+   * renames a different file). Returns what ComfyUI stored.
+   */
+  async uploadImage(png: Buffer, name: string, subfolder: string): Promise<{ name: string; subfolder: string; type: string }> {
+    const form = new FormData();
+    form.append("image", new Blob([new Uint8Array(png)], { type: "image/png" }), name);
+    form.append("subfolder", subfolder);
+    form.append("type", "input");
+    const r = await this.json<{ name?: string; subfolder?: string; type?: string }>("/upload/image", { method: "POST", body: form });
+    if (typeof r.name !== "string") throw new GenerationError(`Upload answered without a file name: ${JSON.stringify(r).slice(0, 300)}`);
+    return { name: r.name, subfolder: r.subfolder ?? "", type: r.type ?? "input" };
   }
 
   async submit(graph: Graph, clientId: string): Promise<string> {

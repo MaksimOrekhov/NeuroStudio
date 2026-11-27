@@ -15,5 +15,7 @@ export const ERROR_CODES = [
   "COMPARISON_FILE_UNREADABLE",
   "PREFERENCE_MEMORY_FAILED",
   "VARIANT_LIMIT",
+  "DEPTH_CONFLICT",
+  "DEPTH_UNAVAILABLE",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];

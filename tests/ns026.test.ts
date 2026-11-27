@@ -346,7 +346,7 @@ test("old collections: no pose anywhere, nothing breaks, nothing is rewritten", 
 
 test("Prompt Evolution: per-pose feedback keeps problem kinds apart and ignores edited prompts; it is never sent to Codex", () => {
   const c = (id: string) => ({ id }) as never;
-  const img = (poseId: string | undefined, collection: string, verdict: "like" | "dislike" | undefined, tags: string[], best = false, net = 0) => ({ poseId, collection: c(collection), verdict, tags, best, net });
+  const img = (poseId: string | undefined, collection: string, verdict: "like" | "dislike" | undefined, tags: string[], best = false, net = 0) => ({ poseId, model: "duskrose", conditioning: "text" as const, collection: c(collection), verdict, tags, best, net });
   const stats = poseStats([
     img("ND-P25", "a", "dislike", ["bad_hands"]),
     img("ND-P25", "b", "dislike", ["bad_legs", "bad_angle"]),
@@ -356,7 +356,7 @@ test("Prompt Evolution: per-pose feedback keeps problem kinds apart and ignores 
     img("ND-P02", "a", "dislike", ["composition", "body_proportions"]),
   ]);
   assert.deepEqual(stats.find((s) => s.poseId === "ND-P25"), {
-    poseId: "ND-P25", images: 3, collections: 2, likes: 1, dislikes: 2, best: 1, arenaPreferred: 1,
+    poseId: "ND-P25", model: "duskrose", conditioning: "text", images: 3, collections: 2, likes: 1, dislikes: 2, best: 1, arenaPreferred: 1,
     issues: { hands: 1, legs: 1, body: 0, angle: 1, composition: 0 },
   });
   assert.deepEqual(stats.find((s) => s.poseId === "ND-P02")!.issues, { hands: 0, legs: 0, body: 1, angle: 0, composition: 1 });

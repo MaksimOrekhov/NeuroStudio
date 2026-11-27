@@ -6,7 +6,7 @@ import { OPTION_RU, optionRu, ruPlural } from "../web/prototype/src/ru.ts";
 import { COMPOSITION_FIELDS, COMPOSITION_OPTIONS } from "../src/composition.ts";
 import { makeCollection } from "../web/prototype/src/mock.ts";
 
-const C = "crimson-oath";
+const C = "crimson-oath-v03"; // NS-027: Auto Mix starts with Crimson Oath v0.3
 const D = "duskrose";
 const I = "illustrijn";
 

@@ -1,5 +1,5 @@
 // NS-013 prototype: image-model registry and per-scene assignment rules.
-import { IMAGE_MODELS as CATALOG, autoMix } from "../../src/imageModels";
+import { AUTO_MIX_MODELS, IMAGE_MODELS as CATALOG, autoMix } from "../../src/imageModels";
 import { W, nPlural } from "./ru";
 
 // Pure TypeScript (no Vue) so the rules can be unit-tested and later moved to src/ in NS-014.
@@ -36,7 +36,9 @@ export { autoMix };
 /** Model per scene (index 0 = Scene 01) for the chosen mode. `custom` holds the user's per-scene picks. */
 export function assignModels(mode: ModelMode, frames: number, custom: readonly string[] = [], models = IMAGE_MODELS): string[] {
   const ids = models.map((m) => m.id);
-  const auto = autoMix(frames, ids);
+  // NS-027: Auto Mix uses its own list (AUTO_MIX_MODELS); every catalog model stays selectable in "only" and "custom".
+  const mix = AUTO_MIX_MODELS.filter((id) => ids.includes(id));
+  const auto = autoMix(frames, mix.length ? mix : ids);
   if (mode === "auto") return auto;
   if (mode.startsWith("only:")) {
     const id = mode.slice(5);

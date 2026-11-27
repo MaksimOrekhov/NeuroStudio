@@ -1,6 +1,8 @@
 import type { Composition } from "../../src/composition";
 import type { ErrorCode } from "./errorCodes";
 import type { ImageModelAssignment } from "../../src/imageModels";
+import type { Conditioning, DepthSpec } from "../../src/depth";
+import type { Settings } from "../../src/composition";
 
 // Types mirror server/collections.ts (CollectionView), server/runner.ts (RunState) and server/runs.ts (RunView).
 
@@ -22,6 +24,8 @@ export interface Frame {
   promptEdited?: boolean;
   /** NS-026: pose from the library (auto pose mode). label = human-readable name; absent when Codex invented the pose. */
   pose?: { id: string; label?: string; description?: string; promptAsPlanned: boolean };
+  /** NS-027: conditioning actually used (depth map or text-only with the reason). Absent when Depth was not requested. */
+  conditioning?: Conditioning;
 }
 
 export interface Feedback {
@@ -104,6 +108,8 @@ export interface RunState {
   evolution?: { enabled: boolean; applied: boolean; reason?: string; error?: string };
   /** NS-026: pose selection mode (absent = free). */
   poseSelection?: "free" | "auto";
+  /** NS-027: Depth requested for this run; warning = why no frame can get a map right now. */
+  depth?: { mode: "auto"; warning?: string };
   /** Present while/after a targeted regeneration of one image (same lock and state as a run). */
   regeneration?: { collectionId: string; frame: number; variant: number; sourceVariant: number };
   finished: string[];
@@ -186,7 +192,17 @@ export interface StartRequest {
   promptEvolution?: boolean;
   /** NS-026: sent only for the library mode; absent = free. */
   poseSelection?: "auto";
+  /** NS-027: sent only when switched on (needs poseSelection "auto"); absent = off. */
+  depthConditioning?: "auto";
 }
+
+/** GET /api/depth/status (NS-027): is the local library readable and does ComfyUI list the nodes and the adapter (presence only)? */
+export interface DepthStatus {
+  library: { available: true; version: number; adapter: string; maps: { id: string; poseId: string; status: string; views: string[]; crops: string[]; models: string[] }[]; excluded: { id?: string; poseId?: string; problem: string }[] } | { available: false; error: string };
+  comfy: { nodes: boolean; adapter: boolean; error?: string; check: "listed-by-comfyui" } | null;
+  instructions?: string;
+}
+export const getDepthStatus = () => json<DepthStatus>("/api/depth/status");
 export const startRun = (req: StartRequest) =>
   json<RunState>("/api/autopilot/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });
 
@@ -200,12 +216,12 @@ export const saveFeedback = (id: string, fb: { rating: number | null; tags: stri
   json<{ feedback: Feedback | null }>(`/api/collections/${encodeURIComponent(id)}/feedback`, put(fb));
 
 export type VariantPrompt =
-  | { frame: number; variant: number; available: true; model: string; positive: string; promptEdited: boolean }
+  | { frame: number; variant: number; available: true; model: string; positive: string; promptEdited: boolean; depth?: { applied: true; mapId?: string; spec?: DepthSpec; requirements: Settings } }
   | { frame: number; variant: number; available: false; code: ErrorCode; reason: string };
 const base = (id: string) => `/api/collections/${encodeURIComponent(id)}`;
 export const getVariantPrompt = (id: string, frame: number, variant: number) => json<VariantPrompt>(`${base(id)}/frames/${frame}/variants/${variant}/prompt`);
 /** One new variant of one frame; `positive` only when the user edited the prompt. */
-export const startRegeneration = (id: string, frame: number, req: { sourceVariant: number; positive?: string }) =>
+export const startRegeneration = (id: string, frame: number, req: { sourceVariant: number; positive?: string; depth?: "keep" | "drop" }) =>
   json<RunState>(`${base(id)}/frames/${frame}/regenerate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });
 
 export interface CodexModels {

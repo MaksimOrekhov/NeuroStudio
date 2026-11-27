@@ -9,6 +9,11 @@ const model = computed(() => modelById(regen.model));
 const changed = computed(() => regen.text.trim() !== regen.original.trim());
 /** Another operation (or this very request) holds the single generation lock. */
 const blocked = computed(() => running.value || regen.submitting);
+/** NS-027: the user's explicit keep/drop decision; an edited prompt no longer flips it automatically. */
+function setKeep(e: Event) {
+  regen.keepDepth = (e.target as HTMLInputElement).checked;
+  regen.depthTouched = true;
+}
 
 function onKey(e: KeyboardEvent) {
   if (e.key === "Escape") closeRegen();
@@ -32,6 +37,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           </p>
           <label class="lab" for="rg-text">Positive prompt<span v-if="regen.edited" class="tagc">Промпт изменён</span></label>
           <textarea id="rg-text" v-model="regen.text" lang="en" spellcheck="false" rows="9" :disabled="blocked" />
+          <template v-if="regen.depth">
+            <label class="sw">
+              <input type="checkbox" :checked="regen.keepDepth" :disabled="blocked" @change="setKeep" />
+              <span>Сохранить Depth-карту позы<template v-if="regen.depth.mapId"> ({{ regen.depth.mapId }})</template></span>
+            </label>
+            <p v-if="regen.depthConflict" class="note warn">Изменённый промпт не совпадает с картой: {{ regen.depthConflict }}. Карта применится только если вы явно оставите её включённой.</p>
+            <p v-else-if="!regen.keepDepth" class="muted small">Карта будет удалена из графа, модель снова подключится к сэмплеру напрямую.</p>
+          </template>
           <p class="muted small">Будет создан новый вариант с новым seed. Остальные варианты, выбор лучшего и оценка не меняются.</p>
           <p v-if="running && !regen.submitting" class="note warn">Сейчас идёт другая генерация — одновременно выполняется только одна. Дождитесь её завершения.</p>
         </template>
@@ -56,6 +69,8 @@ h2 { font-size: 18px; margin: 0; }
 .lab { font-size: 13px; color: var(--text-2); display: flex; align-items: center; gap: 8px; }
 .tagc { font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--accent-soft); color: var(--accent-2); }
 textarea { width: 100%; resize: vertical; min-height: 140px; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--line-2); background: var(--panel-2); color: var(--text); font: 13px/1.5 ui-monospace, Consolas, monospace; }
+.sw { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; }
+.sw input { width: 18px; height: 18px; accent-color: var(--accent); }
 .acts { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
 .sp { flex: 1; }
 p { margin: 0; }
