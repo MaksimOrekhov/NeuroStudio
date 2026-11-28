@@ -33,7 +33,7 @@ const steps = computed<{ label: string; detail: string; state: StepState }[]>(()
     return [
       { label: "Проверка ComfyUI", detail: comfyOk.value ? "Доступен" : "Недоступен сейчас", state: comfyOk.value || s !== "idle" ? "done" : "failed" },
       {
-        label: "Создание нового варианта",
+        label: g.repair ? "Исправление области (Inpainting v2)" : "Создание нового варианта",
         detail: `Кадр ${String(g.frame).padStart(2, "0")} · вариант ${String(g.variant).padStart(2, "0")} из варианта ${String(g.sourceVariant).padStart(2, "0")} · Codex не используется`,
         state: s === "generating" ? "active" : genFailed ? "failed" : "done",
       },

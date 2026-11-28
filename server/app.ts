@@ -21,6 +21,7 @@ import { buildPreferenceContext } from "./promptEvolution.ts";
 import { listRuns } from "./runs.ts";
 import { RunError, type AutopilotRunner } from "./runner.ts";
 import { RegenError, frameCountOf, loadSource, parseFrame, parseVariant } from "../src/regenerate.ts";
+import { REPAIR_ADAPTER, REPAIR_MODELS, repairEnvironment, repairInfo, repairInstructions } from "../src/repair.ts";
 
 export interface AppDeps {
   runner: AutopilotRunner;
@@ -39,6 +40,8 @@ export interface AppDeps {
   /** NS-027: Depth library folder (default local/depth) and the client asked for node/adapter presence. For tests. */
   depthDir?: string;
   depthClient?: Partial<Pick<ComfyClient, "objectInfo">>;
+  /** NS-031: the client asked whether local repair can run (nodes, mask input, adapter). For tests; default = depthClient. */
+  repairClient?: Partial<Pick<ComfyClient, "objectInfo">>;
 }
 
 export function buildApp(d: AppDeps) {
@@ -49,6 +52,7 @@ export function buildApp(d: AppDeps) {
   const status = d.statusClient ?? new ComfyClient(d.comfyUrl, fetch, 2000);
   const depthClient = d.depthClient ?? new ComfyClient(d.comfyUrl, fetch, 5000);
   const depthDir = d.depthDir ?? DEPTH_DIR;
+  const repairClient = d.repairClient ?? depthClient;
   const allowedHosts = new Set([`127.0.0.1:${d.port}`, `localhost:${d.port}`, "127.0.0.1:5173", "localhost:5173"]);
 
   // Local-only hardening: block DNS rebinding (Host header) and cross-site POSTs (Origin header).
@@ -191,7 +195,7 @@ export function buildApp(d: AppDeps) {
         const depth = dn ? { applied: true, ...(cond ? { mapId: cond.mapId, spec: cond.spec } : {}), requirements: s.requirements } : undefined;
         return { frame, variant, model: s.model, positive: s.positive, promptEdited: s.promptEdited, available: true, ...(depth ? { depth } : {}) };
       } catch (e) {
-        if (e instanceof RegenError && e.code === "SOURCE_UNAVAILABLE") return { frame, variant, available: false, code: e.code, reason: e.message };
+        if (e instanceof RegenError && (e.code === "SOURCE_UNAVAILABLE" || e.code === "REPAIR_NOT_REGENERABLE")) return { frame, variant, available: false, code: e.code, reason: e.message };
         throw e;
       }
     } catch (e) {
@@ -207,6 +211,36 @@ export function buildApp(d: AppDeps) {
     try {
       const state = await d.runner.startRegeneration({ collectionId: p.id, frame: p.frame, sourceVariant: body.sourceVariant, positive: body.positive, depth: body.depth });
       return reply.code(202).send(state);
+    } catch (e) {
+      if (e instanceof RunError || e instanceof RegenError) return fail(reply, e.httpStatus, e.code, e.message);
+      throw e;
+    }
+  });
+
+  /** NS-031: can local repair run right now? Nodes, the mask input of AnimaLLLiteApply and the adapter (presence only, never the hash). */
+  app.get("/api/repair/status", async () => {
+    const env = await repairEnvironment(repairClient);
+    const instructions = env.nodes && env.maskInput && !env.adapter ? repairInstructions() : undefined;
+    return { ready: !env.problems.length, ...env, adapterFile: REPAIR_ADAPTER.file, adapterSha256: REPAIR_ADAPTER.sha256, models: REPAIR_MODELS, check: "listed-by-comfyui" as const, ...(instructions ? { instructions } : {}) };
+  });
+
+  /** NS-031: is this variant repairable (model verified, graph readable), its size and the processing areas that fit. Reads only saved files. */
+  app.get("/api/collections/:id/frames/:frame/variants/:variant/repair", async (req, reply) => {
+    const p = req.params as { id: string; frame: string; variant: string };
+    try {
+      const frame = parseFrame(p.frame, await frameCountOf(d.collectionsDir, p.id));
+      return await repairInfo(d.collectionsDir, p.id, frame, parseVariant(p.variant));
+    } catch (e) {
+      if (e instanceof RegenError) return fail(reply, e.httpStatus, e.code, e.message);
+      throw e;
+    }
+  });
+
+  /** NS-031: repairs a painted area as ONE new variant (Inpainting v2, no Codex). 202 = accepted; 409 ALREADY_RUNNING while anything else runs. */
+  app.post("/api/collections/:id/frames/:frame/repair", { bodyLimit: 12 * 1024 * 1024 }, async (req, reply) => {
+    const p = req.params as { id: string; frame: string };
+    try {
+      return reply.code(202).send(await d.runner.startRepair({ collectionId: p.id, frame: p.frame, body: req.body }));
     } catch (e) {
       if (e instanceof RunError || e instanceof RegenError) return fail(reply, e.httpStatus, e.code, e.message);
       throw e;

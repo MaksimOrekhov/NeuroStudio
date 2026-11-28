@@ -17,5 +17,9 @@ export const ERROR_CODES = [
   "VARIANT_LIMIT",
   "DEPTH_CONFLICT",
   "DEPTH_UNAVAILABLE",
+  "REPAIR_NOT_REGENERABLE",
+  "REPAIR_MODEL_UNSUPPORTED",
+  "REPAIR_UNAVAILABLE",
+  "INVALID_MASK",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];

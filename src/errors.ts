@@ -21,6 +21,10 @@ export const ERROR_CODES = [
   "VARIANT_LIMIT", // 409: the frame already has the maximum number of variants (-v99)
   "DEPTH_CONFLICT", // 409: regeneration with an edited prompt that does not clearly fit the source's depth map; keep or drop it explicitly
   "DEPTH_UNAVAILABLE", // 409: regeneration keeping a depth map that ComfyUI cannot use now (map, nodes or adapter missing); nothing was reserved
+  "REPAIR_NOT_REGENERABLE", // 409: NS-031: the variant was made by local repair; its graph is not a generation graph, regenerate the source instead
+  "REPAIR_MODEL_UNSUPPORTED", // 409: NS-031: local repair is verified only for some image models (Crimson Oath v0.3); nothing was reserved
+  "REPAIR_UNAVAILABLE", // 409: NS-031: ComfyUI lacks the repair nodes, the mask input or the Inpainting adapter; nothing was reserved
+  "INVALID_MASK", // 400: NS-031: the repair mask is missing, empty, too large, the wrong size or does not fit the processing area
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 

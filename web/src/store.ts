@@ -14,7 +14,10 @@ import {
   getRuns,
   getStatus,
   getVariantPrompt,
+  getRepairInfo,
+  getRepairStatus,
   startRegeneration,
+  startRepair,
   saveFeedback,
   saveImageFeedback,
   selectBest as apiSelectBest,
@@ -28,6 +31,8 @@ import {
   type Feedback,
   type ImageFeedback,
   type RunRecord,
+  type RepairInfo,
+  type RepairStatus,
 } from "./api";
 import { describeError, type UiError } from "./errors";
 import { DEPTH_REASON_RU, promptMismatch, type DepthSpec } from "../../src/depth";
@@ -545,6 +550,89 @@ export async function submitRegen(): Promise<boolean> {
     return false;
   } finally {
     regen.submitting = false;
+  }
+}
+
+// ---------- Local repair (NS-031): one repaired variant of one frame, same server lock as everything else ----------
+
+export const REPAIR_PRESETS = { remove: 1.0, fix: 0.65 } as const;
+export const repair = reactive({
+  /** The variant being repaired; null = dialog closed. */
+  target: null as { id: string; frame: number; variant: number; image: string } | null,
+  loading: false,
+  info: null as Extract<RepairInfo, { available: true }> | null,
+  status: null as RepairStatus | null,
+  error: null as UiError | null,
+  submitting: false,
+  text: "",
+  preset: "remove" as "remove" | "fix" | "custom",
+  denoise: REPAIR_PRESETS.remove as number,
+  region: 1024 as 512 | 1024,
+});
+
+let repairSeq = 0;
+/** Opens the dialog and loads what the server says about this variant and about ComfyUI (both read-only). */
+export async function openRepair(c: Collection, frame: number, variant: number): Promise<void> {
+  const seq = ++repairSeq;
+  const image = c.frames.find((f) => f.frame === frame && f.variant === variant)?.image;
+  if (!image) return;
+  Object.assign(repair, { target: { id: c.id, frame, variant, image }, loading: true, info: null, status: null, error: null, submitting: false, text: "", preset: "remove", denoise: REPAIR_PRESETS.remove, region: 1024 });
+  try {
+    const [info, status] = await Promise.all([getRepairInfo(c.id, frame, variant), getRepairStatus().catch(() => null)]);
+    if (seq !== repairSeq || !repair.target) return;
+    repair.status = status;
+    if (info.available) {
+      repair.info = info;
+      if (!info.regions.includes(repair.region)) repair.region = info.regions[0] ?? 1024;
+    } else repair.error = describeError(new ApiError(info.reason, info.code, 409));
+  } catch (e) {
+    if (seq === repairSeq && repair.target) repair.error = describeError(e);
+  } finally {
+    if (seq === repairSeq) repair.loading = false;
+  }
+}
+export function closeRepair() {
+  repairSeq++;
+  repair.target = null;
+}
+export function setRepairPreset(p: "remove" | "fix") {
+  repair.preset = p;
+  repair.denoise = REPAIR_PRESETS[p];
+}
+export function setRepairDenoise(v: number) {
+  repair.denoise = Math.round(v * 100) / 100;
+  repair.preset = repair.denoise === REPAIR_PRESETS.remove ? "remove" : repair.denoise === REPAIR_PRESETS.fix ? "fix" : "custom";
+}
+
+/** Sends ONE request with the painted mask. Returns true when the server accepted it (202). */
+export async function submitRepair(mask: string): Promise<boolean> {
+  const t = repair.target;
+  if (!t || repair.submitting || running.value || !repair.info) return false;
+  const text = repair.text.replace(/\s+/g, " ").trim();
+  if (text.length < 3) {
+    repair.error = { message: "Опишите на английском, что должно получиться на месте маски." };
+    return false;
+  }
+  if (/[\u0400-\u04ff]/.test(text)) {
+    repair.error = { message: "Описание исправления нужно написать на английском." };
+    return false;
+  }
+  repair.submitting = true;
+  repair.error = null;
+  try {
+    const state = await startRepair(t.id, t.frame, { sourceVariant: t.variant, mask, text, denoise: repair.denoise, region: repair.region, preset: repair.preset });
+    statusSeq++; // a status request sent before the 202 is stale now
+    app.status = { comfy: app.status?.comfy ?? { ok: true }, run: state };
+    app.connection = "ok";
+    void loadCollections(); // the new slot is already in collection.json
+    if (repair.target?.id === t.id && repair.target.frame === t.frame && repair.target.variant === t.variant) repair.target = null;
+    return true;
+  } catch (e) {
+    repair.error = describeError(e);
+    if (e instanceof ApiError && e.code === "ALREADY_RUNNING") void refreshStatus();
+    return false;
+  } finally {
+    repair.submitting = false;
   }
 }
 

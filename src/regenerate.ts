@@ -51,7 +51,7 @@ export interface RegenSource {
   requirements: Settings;
 }
 
-function collectionDir(dir: string, id: string): string {
+export function collectionDir(dir: string, id: string): string {
   if (!ID.test(id)) throw new RegenError("COLLECTION_NOT_FOUND", "collection not found", 404);
   const root = resolve(dir);
   const p = resolve(root, id);
@@ -59,7 +59,7 @@ function collectionDir(dir: string, id: string): string {
   return p;
 }
 
-async function readManifest(dir: string, id: string): Promise<Manifest> {
+export async function readManifest(dir: string, id: string): Promise<Manifest> {
   try {
     const m = JSON.parse(await readFile(join(collectionDir(dir, id), "collection.json"), "utf8")) as Manifest;
     if (!Array.isArray(m.frames)) throw new Error("no frames");
@@ -117,11 +117,17 @@ export async function loadSource(dir: string, id: string, frame: number, variant
     throw unavailable(`frame ${frame} variant ${variant}: image file ${rec.png} is missing on disk`);
   }
   const sidecarName = rec.png.replace(/\.png$/, ".json");
-  let side: { graph?: unknown; promptEdited?: unknown; pose?: unknown; conditioning?: unknown };
+  let side: { graph?: unknown; promptEdited?: unknown; pose?: unknown; conditioning?: unknown; repair?: unknown };
   try {
     side = JSON.parse(await readFile(join(cdir, sidecarName), "utf8"));
   } catch {
     throw unavailable(`frame ${frame} variant ${variant}: the saved generation settings (${sidecarName}) are missing or unreadable`);
+  }
+  // NS-031: a repaired variant's graph is a local repair of another image, not a generation graph: regenerating it would run the wrong
+  // graph. Refused explicitly; its source variant (or the original) is regenerated instead.
+  if (rec.repair || side.repair) {
+    const from = rec.sourceVariant ?? (side as { sourceVariant?: number }).sourceVariant;
+    throw new RegenError("REPAIR_NOT_REGENERABLE", `frame ${frame} variant ${variant} was made by local repair${from ? ` of variant ${from}` : ""}; regenerate the source variant instead`, 409);
   }
   const graph = side?.graph as Graph | undefined;
   if (!graph || typeof graph !== "object" || Array.isArray(graph)) throw unavailable(`frame ${frame} variant ${variant}: the saved ComfyUI graph is missing`);
@@ -160,26 +166,40 @@ async function exists(p: string): Promise<boolean> {
   );
 }
 
-const saveManifest = (cdir: string, m: Manifest) => writeAtomic(join(cdir, "collection.json"), JSON.stringify(m, null, 2));
+export const saveManifest = (cdir: string, m: Manifest) => writeAtomic(join(cdir, "collection.json"), JSON.stringify(m, null, 2));
 
-const writeSidecar = (cdir: string, name: string, data: Record<string, unknown>) => writeAtomic(join(cdir, `${name}.json`), JSON.stringify(data, null, 2));
+export const writeSidecar = (cdir: string, name: string, data: Record<string, unknown>) => writeAtomic(join(cdir, `${name}.json`), JSON.stringify(data, null, 2));
 
 /**
  * Builds the new variant (number, seed, graph) and writes its slot into collection.json as "pending" together with its
  * sidecar. The number is the highest one ever recorded for the frame + 1 (failed attempts keep their number) and moves on
  * if a file with that name already exists; it is never reused and nothing is overwritten.
  */
-export async function reserve(dir: string, id: string, src: RegenSource, positive: string | undefined, depth?: RegenDepth): Promise<Reservation> {
-  const cdir = collectionDir(dir, id);
-  const m = await readManifest(dir, id);
-  let variant = Math.max(0, ...m.frames.filter((f) => f.frame === src.frame).map((f) => f.variant ?? 1)) + 1;
-  const free = async (v: number) => !(await exists(join(cdir, `scene-${pad(src.frame)}-v${pad(v)}.png`))) && !(await exists(join(cdir, `scene-${pad(src.frame)}-v${pad(v)}.json`)));
+/**
+ * The number of a new variant of `frame`: the highest one ever recorded + 1 (failed attempts keep their number), moved on past any
+ * existing file with that name. Never reused, nothing is overwritten. Shared by regeneration and NS-031 repair.
+ */
+export async function nextVariant(cdir: string, m: Manifest, frame: number): Promise<{ variant: number; name: string }> {
+  let variant = Math.max(0, ...m.frames.filter((f) => f.frame === frame).map((f) => f.variant ?? 1)) + 1;
+  const free = async (v: number) => !(await exists(join(cdir, `scene-${pad(frame)}-v${pad(v)}.png`))) && !(await exists(join(cdir, `scene-${pad(frame)}-v${pad(v)}.json`)));
   while (variant <= MAX_VARIANT && !(await free(variant))) variant++;
-  if (variant > MAX_VARIANT) throw new RegenError("VARIANT_LIMIT", `frame ${src.frame} already has the maximum of ${MAX_VARIANT} variants`, 409);
-  const name = `scene-${pad(src.frame)}-v${pad(variant)}`;
+  if (variant > MAX_VARIANT) throw new RegenError("VARIANT_LIMIT", `frame ${frame} already has the maximum of ${MAX_VARIANT} variants`, 409);
+  return { variant, name: `scene-${pad(frame)}-v${pad(variant)}` };
+}
+
+/** A random seed no frame of the collection uses yet. */
+export function freshSeed(m: Manifest): number {
   const used = new Set(m.frames.map((f) => f.seed));
   let seed = randomInt(0, SEED_MAX);
   while (used.has(seed)) seed = randomInt(0, SEED_MAX);
+  return seed;
+}
+
+export async function reserve(dir: string, id: string, src: RegenSource, positive: string | undefined, depth?: RegenDepth): Promise<Reservation> {
+  const cdir = collectionDir(dir, id);
+  const m = await readManifest(dir, id);
+  const { variant, name } = await nextVariant(cdir, m, src.frame);
+  const seed = freshSeed(m);
   const prevPrefix = src.graph[FIELDS.filenamePrefix.node]?.inputs?.[FIELDS.filenamePrefix.input];
   const folder = typeof prevPrefix === "string" && prevPrefix.includes("/") ? prevPrefix.slice(0, prevPrefix.lastIndexOf("/")) : `NeuroStudio/${id}`;
   const text = positive ?? src.positive;

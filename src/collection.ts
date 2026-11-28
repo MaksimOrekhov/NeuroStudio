@@ -87,6 +87,24 @@ export interface FrameRecord {
   pose?: FramePose;
   /** NS-027: conditioning actually used (Depth map or text-only with the reason). Absent when Depth was not requested. */
   conditioning?: Conditioning;
+  /** NS-031: set only on variants made by local repair (Inpainting v2) of `sourceVariant`. The full record is in the variant's sidecar. */
+  repair?: RepairSummary;
+}
+
+/** NS-031: what the gallery needs to know about a repaired variant (no graph, no base parameters). */
+export interface RepairSummary {
+  method: "inpainting-v2";
+  preset: "remove" | "fix" | "custom";
+  denoise: number;
+  strength: number;
+  /** Processing area side in source pixels (512 is scaled x2 to the 1024 working size). */
+  region: 512 | 1024;
+  /** [x0, y0, x1, y1] of the processing area in the source image. */
+  crop: [number, number, number, number];
+  /** The repair description the user typed (English). */
+  text: string;
+  /** Files of this repair, relative to the collection folder. */
+  files: { mask: string; blend: string; raw: string };
 }
 
 export interface Generation {

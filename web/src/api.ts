@@ -26,6 +26,20 @@ export interface Frame {
   pose?: { id: string; label?: string; description?: string; promptAsPlanned: boolean };
   /** NS-027: conditioning actually used (depth map or text-only with the reason). Absent when Depth was not requested. */
   conditioning?: Conditioning;
+  /** NS-031: set on variants made by local repair (Inpainting v2) of `sourceVariant`. Such a variant cannot be regenerated. */
+  repair?: RepairSummary;
+}
+
+/** NS-031: mirror of RepairSummary in src/collection.ts. */
+export interface RepairSummary {
+  method: "inpainting-v2";
+  preset: "remove" | "fix" | "custom";
+  denoise: number;
+  strength: number;
+  region: 512 | 1024;
+  crop: [number, number, number, number];
+  text: string;
+  files: { mask: string; blend: string; raw: string };
 }
 
 export interface Feedback {
@@ -111,7 +125,7 @@ export interface RunState {
   /** NS-027: Depth requested for this run; warning = why no frame can get a map right now. */
   depth?: { mode: "auto"; warning?: string };
   /** Present while/after a targeted regeneration of one image (same lock and state as a run). */
-  regeneration?: { collectionId: string; frame: number; variant: number; sourceVariant: number };
+  regeneration?: { collectionId: string; frame: number; variant: number; sourceVariant: number; repair?: true };
   finished: string[];
   error?: string;
   errorCode?: ErrorCode;
@@ -223,6 +237,56 @@ export const getVariantPrompt = (id: string, frame: number, variant: number) => 
 /** One new variant of one frame; `positive` only when the user edited the prompt. */
 export const startRegeneration = (id: string, frame: number, req: { sourceVariant: number; positive?: string; depth?: "keep" | "drop" }) =>
   json<RunState>(`${base(id)}/frames/${frame}/regenerate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });
+
+/** NS-031: GET .../variants/:variant/repair */
+export type RepairInfo =
+  | {
+      frame: number;
+      variant: number;
+      available: true;
+      model: string;
+      width: number;
+      height: number;
+      repaired: boolean;
+      regions: (512 | 1024)[];
+      presets: { remove: { denoise: number }; fix: { denoise: number } };
+      strength: number;
+      growPx: number;
+      featherPx: number;
+      maxMaskFraction: number;
+      denoiseMin: number;
+      denoiseMax: number;
+      textMax: number;
+      adapter: string;
+    }
+  | { frame: number; variant: number; available: false; code: ErrorCode; reason: string };
+/** NS-031: GET /api/repair/status (presence of nodes, mask input and adapter as listed by ComfyUI; the hash is not checked). */
+export interface RepairStatus {
+  ready: boolean;
+  nodes: boolean;
+  maskInput: boolean;
+  adapter: boolean;
+  problems: string[];
+  error?: string;
+  adapterFile: string;
+  adapterSha256: string;
+  models: string[];
+  instructions?: string;
+}
+export interface RepairRequest {
+  sourceVariant: number;
+  /** data:image/png;base64 — the painted mask at the image's own size; white = repair. */
+  mask: string;
+  text: string;
+  denoise: number;
+  region: 512 | 1024;
+  preset: "remove" | "fix" | "custom";
+}
+export const getRepairInfo = (id: string, frame: number, variant: number) => json<RepairInfo>(`${base(id)}/frames/${frame}/variants/${variant}/repair`);
+export const getRepairStatus = () => json<RepairStatus>("/api/repair/status");
+/** One repaired variant of one frame (Inpainting v2). 202 = accepted; the result arrives through status polling. */
+export const startRepair = (id: string, frame: number, req: RepairRequest) =>
+  json<RunState>(`${base(id)}/frames/${frame}/repair`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });
 
 export interface CodexModels {
   source: "cache" | "bundled" | "none";

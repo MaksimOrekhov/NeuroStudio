@@ -3,12 +3,13 @@ import { computed, reactive, ref, watch } from "vue";
 import { COMPOSITION_FIELDS } from "../../../src/composition";
 import { exportUrl, imageUrl, type Collection, type Frame } from "../api";
 import { badgeOf, descriptionOf, exportInfo, isRegenerating, pad2, scenesOf, titleOf, unknownFrames, variantsLine, type Scene } from "../lib";
-import { modelById } from "../models";
+import { REPAIR_MODELS, modelById } from "../models";
 import { AUTO_RU, BAD_TAGS, dateFullRu, effortRu, FIELD_RU, GOOD_TAGS, nPlural, ofImages, optionRu, secondsRu, W } from "../ru";
-import { bestBusy, bestError, chooseBest, depthReasonRu, draftOf, go, imageFbError, openRegen, rate, regen, run, running, saveNote, toggleTag } from "../store";
+import { bestBusy, bestError, chooseBest, depthReasonRu, draftOf, go, imageFbError, openRegen, openRepair, rate, regen, repair, run, running, saveNote, toggleTag } from "../store";
 import ImageArena from "./ImageArena.vue";
 import ImageRating from "./ImageRating.vue";
 import RegenerateDialog from "./RegenerateDialog.vue";
+import RepairDialog from "./RepairDialog.vue";
 import Thumb from "./Thumb.vue";
 import Viewer from "./Viewer.vue";
 
@@ -27,7 +28,7 @@ function current(s: Scene) {
 }
 const isBest = (frame: number, variant: number) => props.c.selections[String(frame)] === variant;
 const stateText = (status: string, f?: Frame) =>
-  f && isRegenerating(run.value, props.c, f) ? "Перегенерируется…" : status === "pending" ? (props.c.status === "running" ? "В очереди" : "Не создано") : status === "submitted" ? (props.c.status === "running" ? "Генерируется…" : "Состояние неизвестно") : status === "timeout" ? "Состояние неизвестно" : "Ошибка";
+  f && isRegenerating(run.value, props.c, f) ? (run.value?.regeneration?.repair ? "Исправляется…" : "Перегенерируется…") : status === "pending" ? (props.c.status === "running" ? "В очереди" : "Не создано") : status === "submitted" ? (props.c.status === "running" ? "Генерируется…" : "Состояние неизвестно") : status === "timeout" ? "Состояние неизвестно" : "Ошибка";
 
 const viewer = ref<{ frame: number; variant: number } | null>(null);
 /** Frame whose variants are being compared in the Arena (NS-019). */
@@ -43,8 +44,10 @@ watch(regenImage, (now, was) => {
   if (now && !was && r) viewing[r.frame] = r.variant;
 });
 const variants = computed(() => variantsLine(props.c));
-const busyRegen = computed(() => running.value || regen.submitting);
+const busyRegen = computed(() => running.value || regen.submitting || repair.submitting);
 const regenFrame = (frame: number) => run.value?.status === 'generating' && run.value.regeneration?.collectionId === props.c.id && run.value.regeneration.frame === frame;
+/** NS-031: local repair is verified only for these models; the server enforces the same list. */
+const repairable = (f: Frame) => (REPAIR_MODELS as readonly string[]).includes(f.model);
 
 // ---- Оценка (NS-010: same tag ids, same API, saved at once; requests are serialised per collection) ----
 const hover = ref(0);
@@ -128,7 +131,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
                 v-for="v in s.variants"
                 :key="v.variant"
                 :class="{ on: v.variant === f.variant, best: isBest(s.frame, v.variant), off: !v.image }"
-                :title="v.image ? `Вариант ${v.variant} · seed ${v.seed}${v.promptEdited ? ' · промпт изменён' : ''}` : `Вариант ${v.variant} · ${stateText(v.status, v).toLowerCase()}`"
+                :title="v.image ? `Вариант ${v.variant} · seed ${v.seed}${v.promptEdited ? ' · промпт изменён' : ''}${v.repair ? ` · исправление области из варианта ${v.sourceVariant}` : ''}` : `Вариант ${v.variant} · ${stateText(v.status, v).toLowerCase()}`"
                 @click="viewing[s.frame] = v.variant"
               >
                 <Thumb v-if="v.image" :id="c.id" :file="v.image" :alt="`Вариант ${v.variant}`" />
@@ -143,13 +146,23 @@ const date = computed(() => dateFullRu(props.c.createdAt));
             <button
               v-if="f.image"
               class="btn sm sel"
-              :disabled="busyRegen"
-              :title="running ? 'Сейчас идёт другая генерация' : 'Создать ещё один вариант этого кадра (Codex не используется)'"
+              :disabled="busyRegen || !!f.repair"
+              :title="f.repair ? `Вариант создан исправлением области — перегенерируйте исходный вариант ${f.sourceVariant}` : running ? 'Сейчас идёт другая генерация' : 'Создать ещё один вариант этого кадра (Codex не используется)'"
               @click="openRegen(c, s.frame, f.variant)"
             >
-              {{ regenFrame(s.frame) ? "Перегенерируется…" : "Перегенерировать" }}
+              {{ regenFrame(s.frame) && !run?.regeneration?.repair ? "Перегенерируется…" : "Перегенерировать" }}
             </button>
-            <small v-if="f.promptEdited" class="edited">Промпт изменён · из варианта {{ f.sourceVariant }}</small>
+            <button
+              v-if="f.image"
+              class="btn sm sel"
+              :disabled="busyRegen || !repairable(f)"
+              :title="!repairable(f) ? 'Исправление области пока проверено только для Crimson Oath v0.3' : running ? 'Сейчас идёт другая генерация' : 'Закрасить дефект и исправить только эту область (новый вариант)'"
+              @click="openRepair(c, s.frame, f.variant)"
+            >
+              {{ regenFrame(s.frame) && run?.regeneration?.repair ? "Исправляется…" : "Исправить область" }}
+            </button>
+            <small v-if="f.repair" class="edited" :title="`«${f.repair.text}» · denoise ${f.repair.denoise} · область ${f.repair.region} px`">Исправление области · из варианта {{ f.sourceVariant }}</small>
+            <small v-else-if="f.promptEdited" class="edited">Промпт изменён · из варианта {{ f.sourceVariant }}</small>
             <small v-else-if="f.sourceVariant" class="edited">Перегенерация варианта {{ f.sourceVariant }}</small>
             <p v-if="s.summary" class="sum">{{ s.summary }}</p>
             <p v-if="f.pose" class="pose" :title="f.pose.description ? `${f.pose.description} — поза, заложенная в промпт; изображение автоматически не проверяется` : 'Поза, заложенная в промпт; изображение автоматически не проверяется'">
@@ -222,6 +235,7 @@ const date = computed(() => dateFullRu(props.c.createdAt));
     </div>
 
     <RegenerateDialog v-if="regen.target && regen.target.id === c.id" />
+    <RepairDialog v-if="repair.target && repair.target.id === c.id" />
     <ImageArena v-if="arenaFrame !== null" :c="c" :frame="arenaFrame" @close="arenaFrame = null" />
     <Viewer v-if="viewer" :c="c" :frame="viewer.frame" :variant="viewer.variant" @close="viewer = null" @move="(f, v) => (viewer = { frame: f, variant: v })" />
   </div>

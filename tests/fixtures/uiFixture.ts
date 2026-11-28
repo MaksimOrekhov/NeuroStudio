@@ -9,6 +9,8 @@ import { AutopilotRunner } from "../../server/runner.ts";
 import { createHash } from "node:crypto";
 import { MODELS, applyDepth, applyParams, loadWorkflow } from "../../src/comfy.ts";
 import { planV3 } from "./strictPlan.ts";
+import { fakeComfy } from "./repair.ts";
+import { RN } from "../../src/repair.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 const C = "crimson-oath";
@@ -45,6 +47,8 @@ interface Spec {
   generation?: boolean;
   /** NS-027: frame -> conditioning shown in the UI (frame 1 also gets the Depth nodes in its saved graph). */
   depth?: Record<number, "depth" | "text">;
+  /** NS-031: image size (default 640x960); the repair demo uses the production 1440x2176. */
+  size?: [number, number];
 }
 
 /** NS-027 fake records: a map applied (with the spec of the approved ND-P25 map) and a text-only frame with its reason. */
@@ -87,10 +91,10 @@ async function writeCollection(dir: string, s: Spec) {
         ...(s.depth?.[f] ? { conditioning: s.depth[f] === "depth" ? FAKE_DEPTH : FAKE_TEXT } : {}),
       });
       if (st === "done") {
-        await writeFile(join(d, `${name}.png`), await placeholderPng(s.hue + f * 17, f, v));
+        await writeFile(join(d, `${name}.png`), await placeholderPng(s.hue + f * 17, f, v, ...(s.size ?? [640, 960])));
         // the sidecar the real generator writes: it holds the ComfyUI graph that regeneration starts from (NS-017)
         const withDepth = s.depth?.[f] === "depth";
-        const plain = applyParams(base, { positive: withDepth ? DEPTH_PROMPT : `masterpiece, scene ${f}, ${s.id}, soft light${v >= 3 ? `, variant ${v} (edited)` : ""}`, negative: "lowres", seed: 100000 + f * 10 + v, unet: MODELS[s.models[f - 1] as keyof typeof MODELS], filenamePrefix: `NeuroStudio/${s.id}/${name}` });
+        const plain = applyParams(base, { positive: withDepth ? DEPTH_PROMPT : `masterpiece, best quality,\n\nscene ${f}, ${s.id}, soft light${v >= 3 ? `, variant ${v} (edited)` : ""}`, negative: "lowres", seed: 100000 + f * 10 + v, unet: MODELS[s.models[f - 1] as keyof typeof MODELS], filenamePrefix: `NeuroStudio/${s.id}/${name}` });
         const graph = withDepth ? applyDepth(plain, { image: FAKE_DEPTH.comfyImage, adapter: FAKE_DEPTH.adapter.file, strength: 1, startPercent: 0, endPercent: 1 }) : plain;
         await writeFile(join(d, `${name}.json`), JSON.stringify({ frame: f, model: s.models[f - 1], variant: v, seed: 100000 + f * 10 + v, graph, ...(s.depth?.[f] ? { conditioning: s.depth[f] === "depth" ? FAKE_DEPTH : FAKE_TEXT } : {}) }));
       }
@@ -165,6 +169,8 @@ export async function createFixture(base?: string) {
     { id: "2026-11-07-balcony", title: "Balcony at Dusk", titleRu: "Балкон в сумерках", hue: 20, frameCount: 2, variations: 2, models: [C, D], status: "running", states: { "1-1": "done", "1-2": "done", "2-1": "submitted", "2-2": "pending" }, createdAt: "2026-11-07T20:00:00Z", generation: true },
     // Image Arena demo: one frame with 4 variants to compare (NS-019)
     { id: "2026-11-11-arena", title: "Arena Demo", titleRu: "Демо для сравнения", hue: 100, frameCount: 2, variations: 4, models: [C, D], createdAt: "2026-11-11T12:00:00Z", generation: true },
+    // NS-031: local repair demo — Crimson Oath v0.3 at the production size (repair is enabled only for this model)
+    { id: "2026-11-12-repair", title: "Repair Demo", titleRu: "Демо исправления области", hue: 25, frameCount: 2, variations: 1, models: ["crimson-oath-v03", D], size: [1440, 2176], createdAt: "2026-11-12T12:00:00Z", generation: true },
     // a very long title
     { id: "2026-11-06-long", title: "An Extremely Long Original Title That Keeps Going", titleRu: "Очень длинное название коллекции, которое должно аккуратно переноситься по строкам и не ломать сетку библиотеки", hue: 300, frameCount: 4, variations: 1, models: [C, C, D, D], createdAt: "2026-11-06T10:00:00Z", generation: true },
   ];
@@ -216,18 +222,24 @@ export async function createFakeApp(opts: { fx: Awaited<ReturnType<typeof create
   const b: FakeBehaviour = opts.behaviour ?? {};
   const seen = { plan: [] as unknown[], submit: 0 };
   const png = await placeholderPng(210, 1, 1, 320, 480);
+  // NS-031: repair graphs go to a fake that executes the final composite (the painted area turns flat pink); everything else as before.
+  const rf = fakeComfy();
+  const isRepair = (g: Record<string, unknown>) => RN.composite in g;
   const client = {
     systemStats: async () => {
       if (b.comfyDown) throw new Error("ECONNREFUSED 127.0.0.1:8188");
       return {};
     },
-    checkDependencies: async () => [] as string[],
-    submit: async () => `fake-pid-${++seen.submit}`,
-    waitForImages: async () => {
+    objectInfo: rf.client.objectInfo,
+    uploadImage: rf.client.uploadImage,
+    checkDependencies: async (g: never) => (isRepair(g) ? rf.client.checkDependencies(g) : ([] as string[])),
+    submit: async (g: never) => (isRepair(g) ? rf.client.submit(g) : `fake-pid-${++seen.submit}`),
+    waitForImages: async (pid: string) => {
       await new Promise((r) => setTimeout(r, b.imageMs ?? 0));
+      if (pid.startsWith("pid-")) return rf.client.waitForImages(pid);
       return { images: [{ filename: "a.png", subfolder: "", type: "output" }], history: {} };
     },
-    download: async () => png,
+    download: async (ref: { filename: string }) => (ref.filename === "final.png" || ref.filename === "raw.png" ? rf.client.download(ref) : png),
   };
   const runner = new AutopilotRunner({
     client: client as never,
@@ -271,6 +283,7 @@ export async function createFakeApp(opts: { fx: Awaited<ReturnType<typeof create
     port: opts.port,
     depthDir: opts.fx.depthDir,
     depthClient,
+    repairClient: rf.client,
     webDist: opts.webDist,
     loadCatalog: async () => ({
       source: "cache" as const,

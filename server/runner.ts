@@ -16,6 +16,7 @@ import { buildPreferenceContext } from "./promptEvolution.ts";
 import { loadVisualHistory } from "../src/visualHistory.ts";
 import { writeAtomic } from "../src/persistence.ts";
 import { RegenError, loadSource, parseFrame, parsePositive, parseVariant, frameCountOf, prepareRegenDepth, reserve, runRegeneration } from "../src/regenerate.ts";
+import { buildMasks, decodeMask, loadRepairSource, parseRepairRequest, planCrop, repairEnvironment, repairInstructions, reserveRepair, runRepair } from "../src/repair.ts";
 import { anatomyCaution, countPoseUses, framePoseIds, listedIds, loadPoseCatalog, selectPoses, type PoseMode, type PoseSelection } from "../src/poses.ts";
 import { VIEW_HISTORY_COLLECTIONS, viewHistory, viewNote } from "./poseHistory.ts";
 
@@ -45,7 +46,7 @@ export interface RunState {
   runId?: string;
   currentFrame?: number;
   /** Set only while/after a targeted regeneration (NS-017) of one image: the same lock and state as a normal run. */
-  regeneration?: { collectionId: string; frame: number; variant: number; sourceVariant: number };
+  regeneration?: { collectionId: string; frame: number; variant: number; sourceVariant: number; repair?: true };
   /** NS-020: what Prompt Evolution did for this run (set once the memory has been built). */
   evolution?: { enabled: boolean; applied: boolean; reason?: string; error?: string };
   /** NS-026: pose selection mode of this run (absent = free, as before). */
@@ -73,7 +74,7 @@ export class RunError extends Error {
 }
 
 export interface RunnerDeps {
-  /** objectInfo / uploadImage are needed only for Depth (NS-027); without them Depth falls back to text-only. */
+  /** objectInfo / uploadImage are needed only for Depth (NS-027; without them Depth falls back to text-only) and for repair (NS-031). */
   client: Pick<ComfyClient, "systemStats" | "checkDependencies" | "submit" | "waitForImages" | "download"> & Partial<Pick<ComfyClient, "objectInfo" | "uploadImage">>;
   /** ONE call for the whole batch. */
   plan: (o: BatchOptions) => Promise<BatchResult>;
@@ -224,6 +225,63 @@ export class AutopilotRunner {
         startedAt: new Date().toISOString(),
       };
       void runRegeneration({ r, client: this.deps.client, log })
+        .then(() => {
+          this.state = { ...this.state, status: "completed", done: 1, currentFrame: undefined, finishedAt: new Date().toISOString() };
+        })
+        .catch((e) => {
+          this.state = { ...this.state, status: "failed", error: (e as Error).message, errorCode: runErrorCode(e), currentFrame: undefined, finishedAt: new Date().toISOString() };
+        })
+        .finally(() => {
+          this.busy = false;
+        });
+      return this.state;
+    } catch (e) {
+      this.busy = false;
+      throw e;
+    }
+  }
+
+  /**
+   * NS-031: repairs a painted area of ONE finished image as a new variant (Inpainting v2). Same lock as start() and regeneration.
+   * Everything that can be checked without ComfyUI (request, mask, model, processing area) and the ComfyUI environment (nodes, mask
+   * input, adapter, model files) is checked BEFORE the slot is reserved; the generation itself runs in the background, once.
+   */
+  async startRepair(req: { collectionId: string; frame: unknown; body: unknown }): Promise<RunState> {
+    if (this.busy) throw new RunError("ALREADY_RUNNING", "A generation is already in progress", 409);
+    this.busy = true; // synchronous lock, shared with start() and startRegeneration()
+    try {
+      const { collectionsDir, log } = this.deps;
+      const id = req.collectionId;
+      const frame = parseFrame(req.frame, await frameCountOf(collectionsDir, id));
+      const r0 = parseRepairRequest(req.body);
+      const src = await loadRepairSource(collectionsDir, id, frame, r0.sourceVariant);
+      const masks = buildMasks(await decodeMask(r0.mask, src.width, src.height), src.width, src.height);
+      const crop = planCrop(masks.bbox, src.width, src.height, r0.region);
+      const client = this.deps.client;
+      if (!client.objectInfo || !client.uploadImage) throw new RegenError("REPAIR_UNAVAILABLE", "the ComfyUI client cannot list nodes or upload images", 409);
+      try {
+        await client.systemStats();
+      } catch (e) {
+        throw new RunError("COMFY_UNREACHABLE", `ComfyUI is not reachable: ${(e as Error).message}. Start ComfyUI and try again.`, 503);
+      }
+      const env = await repairEnvironment(client, src.base);
+      if (env.error) throw new RunError("COMFY_UNREACHABLE", `ComfyUI is not reachable: ${env.error}. Start ComfyUI and try again.`, 503);
+      if (env.problems.length) throw new RegenError("REPAIR_UNAVAILABLE", `${env.problems.join("; ")}${env.nodes && env.maskInput && !env.adapter ? `\n${repairInstructions()}` : ""}`, 409);
+      const r = await reserveRepair(collectionsDir, id, src, r0, masks, crop);
+      this.state = {
+        ...idle(),
+        status: "generating",
+        collectionId: id,
+        collection: 1,
+        collections: 1,
+        frames: 1,
+        variations: 1,
+        total: 1,
+        currentFrame: frame,
+        regeneration: { collectionId: id, frame, variant: r.variant, sourceVariant: src.variant, repair: true },
+        startedAt: new Date().toISOString(),
+      };
+      void runRepair({ r, client: client as never, log })
         .then(() => {
           this.state = { ...this.state, status: "completed", done: 1, currentFrame: undefined, finishedAt: new Date().toISOString() };
         })

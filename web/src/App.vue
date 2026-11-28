@@ -16,6 +16,7 @@ const pct = computed(() => (run.value?.total ? Math.round((run.value.done / run.
 const runLabel = computed(() => {
   if (state.value === "planning") return "Codex составляет план";
   const rg = run.value?.regeneration;
+  if (rg?.repair) return { generating: `Исправление области · кадр ${String(rg.frame).padStart(2, "0")}…`, completed: "Исправление завершено", failed: "Исправление остановлено" }[state.value as string] ?? "";
   if (rg) return { generating: `Перегенерация кадра ${String(rg.frame).padStart(2, "0")}…`, completed: "Перегенерация завершена", failed: "Перегенерация остановлена" }[state.value as string] ?? "";
   if (state.value === "generating") return `Генерация ${run.value?.done}/${run.value?.total}`;
   if (state.value === "completed") return "Генерация завершена";
