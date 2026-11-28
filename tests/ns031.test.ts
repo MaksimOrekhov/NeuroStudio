@@ -1,7 +1,8 @@
 // NS-031: manual local repair (Inpainting v2). No GPU, no Codex: ComfyUI is a fake that executes the repair graph's composite in JS.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { io } from "../src/persistence.ts";
 import { join, resolve } from "node:path";
 import { FIELDS, MODELS, applyParams, loadWorkflow } from "../src/comfy.ts";
 import {
@@ -253,4 +254,70 @@ test("repair info for the dialog: size, processing areas that fit, presets and l
   assert.deepEqual([info.available, info.model, info.width, info.height, info.regions], [true, "crimson-oath-v03", W, HT, [512, 1024]]);
   assert.deepEqual(info.presets, { remove: { denoise: 1 }, fix: { denoise: 0.65 } });
   assert.equal(info.strength, 1);
+});
+
+// ---------- reservation failures (FS) ----------
+
+const exists = (p: string) => stat(p).then(() => true, () => false);
+
+test("FS: the sidecar or manifest cannot be written when reserving: no leftover folder or files, manifest unchanged, nothing uploaded; the next attempt works", async () => {
+  for (const failing of ["scene-01-v02.json", "collection.json"]) {
+    const e = await setup();
+    const before = await e.snapshot();
+    const rename = io.rename;
+    io.rename = (async (a: string, b: string) => {
+      if (String(b).endsWith(failing)) throw Object.assign(new Error("EPERM: injected"), { code: "EPERM" });
+      return rename(a, b);
+    }) as typeof io.rename;
+    let r;
+    try {
+      r = await e.post(await body());
+    } finally {
+      io.rename = rename;
+    }
+    assert.equal(r.statusCode, 500, failing);
+    assert.ok((await e.snapshot())["collection.json"].equals(before["collection.json"]), failing);
+    assert.equal(await exists(join(e.cdir, "repairs", "scene-01-v02")), false, `${failing}: the attempt's own folder is removed`);
+    assert.deepEqual((await readdir(e.cdir)).filter((f) => f.startsWith("scene-01-v02")), [], failing);
+    assert.equal(e.fake.uploads.size + e.fake.submits.length, 0, failing);
+    assert.equal(e.runner.active, false, failing);
+    const again = await e.post(await body());
+    assert.equal(again.statusCode, 202, again.body);
+    assert.equal(again.json().regeneration.variant, 2, "the same number is free again");
+    await e.settle();
+    assert.equal(e.runner.state.status, "completed", e.runner.state.error);
+  }
+});
+
+test("FS: when the cleanup fails too, the leftover repairs folder is kept as it is and the next attempt takes the next number (no EEXIST)", async () => {
+  const e = await setup();
+  const rename = io.rename, unlink = io.unlink;
+  io.rename = (async (a: string, b: string) => {
+    if (String(b).endsWith("scene-01-v02.json")) throw Object.assign(new Error("EPERM: injected"), { code: "EPERM" });
+    return rename(a, b);
+  }) as typeof io.rename;
+  io.unlink = (async () => {
+    throw Object.assign(new Error("EBUSY: injected"), { code: "EBUSY" });
+  }) as typeof io.unlink;
+  try {
+    assert.equal((await e.post(await body())).statusCode, 500);
+  } finally {
+    io.rename = rename;
+    io.unlink = unlink;
+  }
+  const left = join(e.cdir, "repairs", "scene-01-v02");
+  const leftover = Object.fromEntries(await Promise.all((await readdir(left)).map(async (f) => [f, await readFile(join(left, f))])));
+  assert.deepEqual(Object.keys(leftover).sort(), ["blend.png", "grow.png", "mask.png"]);
+  const r = await e.post(await body());
+  assert.equal(r.statusCode, 202, r.body);
+  assert.equal(r.json().regeneration.variant, 3, "the occupied number 2 is skipped, never reused");
+  await e.settle();
+  assert.equal(e.runner.state.status, "completed", e.runner.state.error);
+  for (const [f, buf] of Object.entries(leftover)) assert.ok((await readFile(join(left, f))).equals(buf as Buffer), `${f} left untouched`);
+  assert.equal((await e.get()).frames.find((f: any) => f.variant === 3).status, "done");
+  // regeneration skips that number as well
+  const regen = await e.app.inject({ method: "POST", url: `/api/collections/${e.id}/frames/1/regenerate`, headers: H, payload: { sourceVariant: 1 } });
+  assert.equal(regen.statusCode, 202, regen.body);
+  assert.equal(regen.json().regeneration.variant, 4);
+  await e.settle();
 });

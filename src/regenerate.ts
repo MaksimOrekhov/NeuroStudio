@@ -177,11 +177,15 @@ export const writeSidecar = (cdir: string, name: string, data: Record<string, un
  */
 /**
  * The number of a new variant of `frame`: the highest one ever recorded + 1 (failed attempts keep their number), moved on past any
- * existing file with that name. Never reused, nothing is overwritten. Shared by regeneration and NS-031 repair.
+ * existing file with that name (PNG, sidecar or NS-031 repairs/<name> folder). Never reused, nothing is overwritten. Shared by regeneration and NS-031 repair.
  */
 export async function nextVariant(cdir: string, m: Manifest, frame: number): Promise<{ variant: number; name: string }> {
   let variant = Math.max(0, ...m.frames.filter((f) => f.frame === frame).map((f) => f.variant ?? 1)) + 1;
-  const free = async (v: number) => !(await exists(join(cdir, `scene-${pad(frame)}-v${pad(v)}.png`))) && !(await exists(join(cdir, `scene-${pad(frame)}-v${pad(v)}.json`)));
+  // NS-031: a leftover repairs/<name> folder (e.g. from a reservation whose cleanup failed) also makes the number taken.
+  const free = async (v: number) => {
+    const name = `scene-${pad(frame)}-v${pad(v)}`;
+    return !(await exists(join(cdir, `${name}.png`))) && !(await exists(join(cdir, `${name}.json`))) && !(await exists(join(cdir, "repairs", name)));
+  };
   while (variant <= MAX_VARIANT && !(await free(variant))) variant++;
   if (variant > MAX_VARIANT) throw new RegenError("VARIANT_LIMIT", `frame ${frame} already has the maximum of ${MAX_VARIANT} variants`, 409);
   return { variant, name: `scene-${pad(frame)}-v${pad(variant)}` };

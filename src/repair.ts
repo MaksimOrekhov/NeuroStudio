@@ -5,7 +5,7 @@
 // resubmitted.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, rmdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import sharp from "sharp";
 import { FIELDS, ComfyUnavailableError, boosterOff, type ComfyClient, type Graph, type ImageRef } from "./comfy.ts";
@@ -570,8 +570,6 @@ export async function reserveRepair(dir: string, id: string, src: RepairSource, 
   if (sha(inputs.source) !== src.sha256) throw new RegenError("SOURCE_UNAVAILABLE", `the source image ${src.png} changed while the repair was being prepared`, 409);
   const rel = `repairs/${name}`;
   const files = { mask: `${rel}/mask.png`, grow: `${rel}/grow.png`, blend: `${rel}/blend.png`, raw: `${rel}/raw-crop.png` };
-  await mkdir(join(cdir, rel), { recursive: true });
-  for (const [k, buf] of [["mask", inputs.maskFull], ["grow", inputs.growFull], ["blend", inputs.blendFull]] as const) await io.writeFile(join(cdir, files[k]), buf, { flag: "wx" });
   const summary: RepairSummary = { method: "inpainting-v2", preset: req.preset, denoise: req.denoise, strength: STRENGTH, region: req.region, crop, text: req.text, files: { mask: files.mask, blend: files.blend, raw: files.raw } };
   const repair = {
     ...summary,
@@ -587,13 +585,29 @@ export async function reserveRepair(dir: string, id: string, src: RepairSource, 
   };
   const positive = repairPositive(src.base, req.text);
   const record: FrameRecord = { frame: src.frame, variant, model: src.model, seed, status: "pending", sourceVariant: src.variant, repair: summary };
-  await writeSidecar(cdir, name, { frame: src.frame, variant, model: src.model, seed, sourceVariant: src.variant, positive, status: "pending", repair });
-  m.frames.push(record);
+  // Masks, sidecar, manifest. If any step fails nothing was submitted and the slot does not exist: only what THIS attempt created is
+  // removed (its own mask files, its folder if it made it and it is empty, its own sidecar). Anything that cannot be removed stays and
+  // nextVariant() treats its number as taken, so a later attempt never reuses it.
+  const repairDir = join(cdir, rel);
+  const created: string[] = [];
+  let madeDir = false;
+  let sidecar = false;
   try {
+    madeDir = !(await stat(repairDir).then(() => true, () => false));
+    await mkdir(repairDir, { recursive: true });
+    for (const [k, buf] of [["mask", inputs.maskFull], ["grow", inputs.growFull], ["blend", inputs.blendFull]] as const) {
+      await io.writeFile(join(cdir, files[k]), buf, { flag: "wx" });
+      created.push(join(cdir, files[k]));
+    }
+    await writeSidecar(cdir, name, { frame: src.frame, variant, model: src.model, seed, sourceVariant: src.variant, positive, status: "pending", repair });
+    sidecar = true;
+    m.frames.push(record);
     await saveManifest(cdir, m);
   } catch (e) {
-    m.frames.pop(); // nothing was submitted: the slot does not exist
-    await io.unlink(join(cdir, `${name}.json`)).catch(() => {});
+    if (m.frames[m.frames.length - 1] === record) m.frames.pop();
+    if (sidecar) await io.unlink(join(cdir, `${name}.json`)).catch(() => {});
+    for (const p of created) await io.unlink(p).catch(() => {});
+    if (madeDir) await rmdir(repairDir).catch(() => {}); // only an empty folder is removed
     throw e;
   }
   const prevPrefix = `NeuroStudio/${id}`;
