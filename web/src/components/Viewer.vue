@@ -2,8 +2,8 @@
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { imageUrl, type Collection } from "../api";
 import { pad2, summaryOf, titleOf } from "../lib";
-import { modelById } from "../models";
-import { bestBusy, chooseBest, imageFbError } from "../store";
+import { REPAIR_MODELS, modelById } from "../models";
+import { bestBusy, chooseBest, imageFbError, openRepair, repair, running } from "../store";
 import ImageRating from "./ImageRating.vue";
 
 const props = defineProps<{ c: Collection; frame: number; variant: number }>();
@@ -20,7 +20,12 @@ function step(d: number) {
   const n = images.value[(idx.value + d + images.value.length) % images.value.length];
   if (n) emit("move", n.frame, n.variant);
 }
+const repairable = computed(() => !!f.value && (REPAIR_MODELS as readonly string[]).includes(f.value.model));
 function onKey(e: KeyboardEvent) {
+  // NS-031: while the repair dialog is open (it lies above the viewer) its own keys apply; typing there must not pick Best or switch images.
+  if (repair.target) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
   if (e.key === "Escape") emit("close");
   else if (e.key === "ArrowRight") step(1);
   else if (e.key === "ArrowLeft") step(-1);
@@ -40,9 +45,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           <b>{{ titleOf(c) }} · кадр {{ pad2(f.frame) }}<template v-if="siblings > 1"> · вариант {{ f.variant }} из {{ siblings }}</template></b>
           <p><span class="dot" :style="{ background: modelById(f.model)?.color }" /> {{ modelById(f.model)?.name }} · seed {{ f.seed }}</p>
           <p v-if="summaryOf(f)" class="muted">{{ summaryOf(f) }}</p>
+          <p v-if="f.repair" class="muted">Исправление области из варианта {{ f.sourceVariant }}: «{{ f.repair.text }}» · denoise {{ f.repair.denoise }} · {{ f.repair.region }} px</p>
         </div>
         <div class="acts">
           <button class="btn" :class="{ ok: best }" :disabled="bestBusy[c.id]" @click="chooseBest(c, f.frame, f.variant)">{{ best ? "✓ Лучший" : "Выбрать лучшим" }} <kbd>B</kbd></button>
+          <button class="btn" :disabled="!repairable || running || repair.submitting" :title="repairable ? 'Закрасить дефект и исправить только эту область (новый вариант)' : 'Исправление области пока проверено только для Crimson Oath v0.3'" @click="openRepair(c, f.frame, f.variant)">Исправить область</button>
           <a class="btn" :href="imageUrl(c.id, f.image!, true)" download>PNG</a>
           <button class="btn ghost" @click="emit('close')">Закрыть <kbd>Esc</kbd></button>
         </div>
@@ -62,9 +69,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .pic { flex: none; aspect-ratio: 2 / 3; height: calc(100vh - 310px); margin: 0 auto; border-radius: 14px; overflow: hidden; border: 2px solid transparent; }
 .pic.best { border-color: var(--ok); }
 .info { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; width: calc((100vh - 310px) * 2 / 3); min-width: 560px; margin: 0 auto; }
-.it { min-width: 0; flex: 1; }
+.it { min-width: 220px; flex: 1; }
 .it p { font-size: 14px; display: flex; align-items: center; gap: 6px; }
-.acts { display: flex; gap: 6px; flex: none; }
+.acts { display: flex; gap: 6px; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; }
 kbd { font: 11px/1 inherit; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--line-2); color: var(--muted); }
 .pos { text-align: center; }
 .rt { width: calc((100vh - 310px) * 2 / 3); min-width: 560px; margin: 0 auto; }

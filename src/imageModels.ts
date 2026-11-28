@@ -22,6 +22,9 @@ export const isModelId = (x: unknown): x is ImageModelId => typeof x === "string
  * Custom, old collections) but is no longer part of Auto Mix (NS-027). Server, CLI and UI all read this one list.
  */
 export const AUTO_MIX_MODELS: readonly ImageModelId[] = ["crimson-oath-v03", "duskrose", "illustrijn"];
+
+/** NS-031: models local repair (Anima LLLite Inpainting v2) was verified on in NS-030. Others are not declared compatible until checked. */
+export const REPAIR_MODELS: readonly ImageModelId[] = ["crimson-oath-v03"];
 /** Position in the catalog; used to group jobs by model. */
 export const modelIndex = (id: string) => MODEL_IDS.indexOf(id as ImageModelId);
 

@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import type { Generation, Manifest } from "../src/collection.ts";
+import type { Generation, Manifest, RepairSummary } from "../src/collection.ts";
 import type { PromptPlan } from "../src/promptPlan.ts";
 import { io, writeAtomic } from "../src/persistence.ts";
 import { IMAGE_NOTE_MAX, IMAGE_TAGS } from "../src/imageFeedback.ts";
@@ -32,6 +32,8 @@ export interface FrameView {
   pose?: { id: string; label?: string; description?: string; promptAsPlanned: boolean };
   /** NS-027: conditioning actually used (depth map, or text-only with the reason). Absent when Depth was not requested. */
   conditioning?: Conditioning;
+  /** NS-031: set on variants made by local repair of `sourceVariant` (they cannot be regenerated; they can be repaired again). */
+  repair?: RepairSummary;
 }
 
 export interface CollectionView {
@@ -270,6 +272,7 @@ export async function readCollection(dir: string, id: string, activeId?: string)
         promptEdited: f.promptEdited,
         ...poseView(f.pose),
         ...conditioningView(f.conditioning),
+        ...(f.repair && typeof f.repair === "object" ? { repair: f.repair } : {}),
       }))
       .sort((a, b) => a.frame - b.frame || a.variant - b.variant);
     const status = m.status === "running" && id !== activeId ? "interrupted" : m.status;
@@ -293,7 +296,7 @@ export async function readCollection(dir: string, id: string, activeId?: string)
             f.image = `${name}.png`;
           } else {
             f.status = f.status === "submitted" || f.promptId ? "timeout" : "failed"; // accepted by ComfyUI: outcome unknown
-            f.error = side.error ?? "Regeneration was interrupted before the image was saved; it is not resubmitted automatically";
+            f.error = side.error ?? `${f.repair ? "Repair" : "Regeneration"} was interrupted before the image was saved; it is not resubmitted automatically`;
           }
         }
       }

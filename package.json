@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "smoke": "tsx scripts/comfy-smoke-test.ts",
+    "smoke:repair": "tsx scripts/repair-smoke.ts",
     "autopilot": "tsx scripts/autopilot.ts",
     "build": "vite build web",
     "start": "vite build web && tsx server/index.ts",

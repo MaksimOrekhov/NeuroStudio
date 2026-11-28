@@ -1,5 +1,6 @@
 // NS-013 prototype: image-model registry and per-scene assignment rules.
-import { AUTO_MIX_MODELS, IMAGE_MODELS as CATALOG, autoMix } from "../../src/imageModels";
+import { AUTO_MIX_MODELS, IMAGE_MODELS as CATALOG, REPAIR_MODELS, autoMix } from "../../src/imageModels";
+export { REPAIR_MODELS };
 import { W, nPlural } from "./ru";
 
 // Pure TypeScript (no Vue) so the rules can be unit-tested and later moved to src/ in NS-014.
