@@ -847,3 +847,15 @@ test("gesture: the ND-P25 map needs exactly one hand on the hip (her right one w
   assert.equal((await manifest()).frames.length, 1);
   await e.app.close();
 });
+
+test("NS-029 regression: a raised or lowered viewpoint without a view noun is not eye level; light and places are not viewpoints", () => {
+  const vp = (v: string) => withView(`front three-quarter view from head to mid-thigh, ${v}, warm amber lamp light across her face`);
+  for (const v of ["seen from slightly above", "from above", "from slightly below", "slightly elevated", "she looks up toward the viewer from below", "viewed from directly overhead"]) {
+    assert.equal(readPrompt(vp(v)).viewpoint, "other", v);
+    assert.equal(promptMismatch(SPEC, vp(v))?.reason, "viewpoint-mismatch", `ND-P25 must refuse: ${v}`);
+  }
+  for (const v of ["eye level", "warm light from above", "sunlight pours from above", "soft light falling from overhead", "lit from below by candles", "moonlight from above", "a balcony above her"]) {
+    assert.equal(readPrompt(vp(v)).viewpoint, "eye_level", v);
+  }
+  assert.equal(promptMismatch(SPEC, GOOD), null, "the Stage A prompt still fits");
+});

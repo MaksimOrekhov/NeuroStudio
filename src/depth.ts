@@ -237,6 +237,12 @@ const ELEVATION = /\b(?:slightly |very )?(?:high|low)[- ]angle\b|\belevated (?:v
 /** In a view clause ("... view", "... angle", "... composition") any height word counts: "three-quarter view from slightly above". */
 const VIEW_CLAUSE = /\b(?:view|angle|perspective|vantage|viewpoint|composition|shot)\b/i;
 const HEIGHT_WORD = /\b(?:above|below|overhead|elevated|raised|lowered|high|low|upward|downward)\b/i;
+/**
+ * Viewpoint phrases without a view noun: "seen from slightly above", a bare "from above" or "slightly elevated", "looks up ... from below".
+ * Clauses about light or a place are left alone ("sunlight pours from above", "elevated rail platform", "a balcony above her").
+ */
+const VIEW_HEIGHT = /\b(?:seen|viewed|shot|observed|pictured|captured)\s+from\s+(?:slightly\s+|directly\s+|just\s+|far\s+)?(?:above|below|overhead)\b|^(?:from\s+)?(?:slightly\s+|directly\s+|just\s+|far\s+)?(?:above|below|overhead)$|^(?:slightly\s+|very\s+)?(?:elevated|raised|lowered)$|\blook(?:s|ing)?\s+(?:up|down)\b.*\bfrom\s+(?:slightly\s+)?(?:above|below)\b/i;
+const LIGHT_OR_PLACE = /\b(?:light|lights|lighting|lit|sun|sunlight|sunbeams?|moon|moonlight|lamps?|lanterns?|glow|glows|glowing|spotlights?|shines?|shining|beams?|rays?|illuminat\w*|reflections?|shadows?|skylight|candles?|balcony|platform|walkway|terrace|shelf|shelves|ceiling|windows?)\b/i;
 
 const STANDING = /\bstand(?:s|ing)\b(?!\s+(?:lamp|light|desk|mirror|fan))/i;
 const OTHER_POSTURE = /\b(?:sit(?:s|ting)?|seated|perched|kneel(?:s|ing)?|lying|lies|lie down|reclin(?:es|ing)|lounging|crouch(?:es|ing)?|squat(?:s|ting)?|walk(?:s|ing)?|mid-stride|strid(?:es|ing)|lean(?:s|ing)?)\b/i;
@@ -314,7 +320,8 @@ export function readPrompt(positive: string): PromptReading {
   const cropNote = found.size > 1 ? `several shot sizes: ${[...found].join(", ")}` : found.size === 0 ? "no shot size stated" : undefined;
 
   // Eye level is the house default: an explicit "eye level" and no mention at all read the same; any elevation term does not.
-  const viewpoint = any(all, ELEVATION) || vc.some((c) => VIEW_CLAUSE.test(c) && HEIGHT_WORD.test(c)) ? "other" : "eye_level";
+  const viewpoint =
+    any(all, ELEVATION) || vc.some((c) => (VIEW_CLAUSE.test(c) && HEIGHT_WORD.test(c)) || (VIEW_HEIGHT.test(c) && !LIGHT_OR_PLACE.test(c))) ? "other" : "eye_level";
 
   const standing = any(all, STANDING);
   const other = any(all, OTHER_POSTURE);
